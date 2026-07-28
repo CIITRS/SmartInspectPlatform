@@ -4,7 +4,7 @@
 [![Release](https://img.shields.io/github/v/release/CIITRS/SmartInspectPlatform)](https://github.com/CIITRS/SmartInspectPlatform/releases)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
-患者、样本、检测结果和报告的一体化管理平台。当前版本为 **v0.1**，包含管理后台、Go API 服务和微信小程序。
+患者、样本、检测结果和报告的一体化管理平台。当前版本为 **v0.1.1**，包含管理后台、Go API 服务和微信小程序。
 
 > 本系统用于医疗检测业务流程管理，不能替代医生诊断或治疗建议。部署和使用时应遵守所在地的医疗、隐私与数据安全法规。
 
@@ -82,7 +82,11 @@ go run .
 | `GITHUB_TOKEN` | 可选；提高 GitHub API 限额，私有仓库时必需 |
 | `SYSTEM_UPGRADE_ENABLED` | 是否允许自动升级，默认启用；Windows 自动禁用 |
 | `SYSTEM_UPGRADE_SCRIPT` | 自定义升级脚本路径 |
-| `SMART_INSPECT_SERVICE` | systemd 服务名，默认 `huawei-go` |
+| `SMART_INSPECT_SERVICE_MANAGER` | `auto`、`supervisor` 或 `systemd` |
+| `SMART_INSPECT_SERVICE` | 服务名；`auto` 会按当前可执行文件匹配 Supervisor 配置 |
+| `SMART_INSPECT_SUPERVISORCTL` | 可选，自定义 `supervisorctl` 路径 |
+| `SMART_INSPECT_SUPERVISOR_CONFIG` | Supervisor 主配置，默认 `/etc/supervisor/supervisord.conf` |
+| `SMART_INSPECT_HEALTH_URL` | 升级后的 HTTP 健康检查地址 |
 
 不要提交 `.env`、数据库口令、AK/SK、微信密钥、RSA 私钥或证书。敏感系统设置在数据库中加密保存。
 
@@ -148,14 +152,18 @@ GET  /api/system/version
 POST /api/system/version/upgrade
 ```
 
-自动升级仅支持 Linux。`POST` 接口只接受 GitHub 最新 Release 的合法版本标签，后台执行 `huawei-go/scripts/upgrade.sh`：拉取标签、在隔离 worktree 构建、备份当前程序、原子替换文件并重启 systemd 服务。日志写入 `huawei-go/logs/upgrade.log`。
+自动升级仅支持 Linux。`POST` 接口只接受 GitHub 最新 Release 的合法版本标签，后台执行 `huawei-go/scripts/upgrade.sh`。脚本支持两种部署：
 
-服务器必须是本仓库的 Git checkout，并建议提前测试：
+- 源码检出：在隔离 worktree 中构建并测试。
+- 宝塔/平铺部署：下载 GitHub Release，验证 SHA-256 后替换二进制与静态文件，无需服务器安装 Go。
+
+脚本会自动识别宝塔 Supervisor 或 systemd，备份当前二进制与静态文件，原子切换，重启服务并执行 HTTP 健康检查；任一步失败都会恢复备份。日志写入 `huawei-go/logs/upgrade.log`。
+
+正式升级前可进行完整的无写入检查（会下载和校验发布包，但不会替换文件或重启服务）：
 
 ```bash
-sudo systemctl status huawei-go
-cd /path/to/SmartInspectPlatform/huawei-go
-bash scripts/upgrade.sh v0.1
+cd /path/to/application
+bash scripts/upgrade.sh v0.1.1 --check
 ```
 
 自动升级会改动运行文件并重启服务。生产使用前应配置数据库与文件备份、维护窗口、服务账户权限和回滚预案。
