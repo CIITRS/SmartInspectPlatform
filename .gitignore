@@ -1,0 +1,85 @@
+# Node.js dependencies
+node_modules/
+
+# Environment variables and local secrets
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example
+.trae/
+
+# Keys and certificates
+*.pem
+*.key
+*.crt
+*.cer
+*.csr
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+known_hosts
+huawei-go/cart/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Build/cache files
+dist/
+build/
+.gocache/
+huawei-go/static/
+huawei-go/pkg/pdfcpu/
+huawei-go/handlers/src/
+huawei-go/fonts/SimSun.ttf
+huawei-go/fonts/simsun.ttc
+huawei-ui/src/.umi/
+huawei-ui/src/.umi-production/
+tmp/
+temp/
+cache/
+*.tmp
+*.temp
+
+# Runtime binaries
+huawei-go/server
+huawei-go/server.exe
+huawei-go/*.exe
+
+# Local archives/backups
+*.zip
+*.7z
+*.rar
+*.tar
+*.tar.gz
+*.tgz
+*.hertz.gz
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test coverage
+coverage/
+*.lcov
+
+# Huawei runtime uploaded/generated files
+huawei-go/file/
+huawei-go/file/**/*.pdf*
+huawei-go/uploads/
+.upgrade/

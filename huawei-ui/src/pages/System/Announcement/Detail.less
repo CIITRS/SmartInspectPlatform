@@ -1,0 +1,242 @@
+.announcementHeader {
+  margin-bottom: 16px;
+
+  .title {
+    margin-bottom: 16px;
+    text-align: center;
+  }
+
+  .meta {
+    display: flex;
+    justify-content: center;
+    flex-wrap: wrap;
+    color: #666;
+    font-size: 14px;
+
+    .metaItem {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+  }
+}
+
+.richContent {
+  line-height: 1.8;
+  color: #333;
+
+  // 段落样式
+  p {
+    margin-bottom: 16px;
+    line-height: 1.8;
+  }
+
+  // 标题样式
+  h1, h2, h3, h4, h5, h6 {
+    margin-top: 24px;
+    margin-bottom: 16px;
+    font-weight: 600;
+    line-height: 1.4;
+  }
+
+  h1 {
+    font-size: 28px;
+  }
+
+  h2 {
+    font-size: 24px;
+  }
+
+  h3 {
+    font-size: 20px;
+  }
+
+  h4 {
+    font-size: 18px;
+  }
+
+  h5 {
+    font-size: 16px;
+  }
+
+  h6 {
+    font-size: 14px;
+  }
+
+  // 链接样式
+  a {
+    color: #1890ff;
+    text-decoration: none;
+
+    &:hover {
+      text-decoration: underline;
+    }
+  }
+
+  // 图片样式
+  img {
+    max-width: 100%;
+    height: auto;
+    display: block;
+    margin: 16px auto;
+    border-radius: 4px;
+  }
+
+  // 表格样式
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+    font-size: 14px;
+
+    th, td {
+      border: 1px solid #d9d9d9;
+      padding: 12px 16px;
+      text-align: left;
+    }
+
+    th {
+      background-color: #fafafa;
+      font-weight: 600;
+    }
+
+    tr:nth-child(even) {
+      background-color: #fafafa;
+    }
+
+    tr:hover {
+      background-color: #f0f0f0;
+    }
+  }
+
+  // 列表样式
+  ul, ol {
+    margin: 16px 0;
+    padding-left: 24px;
+
+    li {
+      margin-bottom: 8px;
+      line-height: 1.8;
+    }
+  }
+
+  ul {
+    list-style-type: disc;
+
+    ul {
+      list-style-type: circle;
+
+      ul {
+        list-style-type: square;
+      }
+    }
+  }
+
+  ol {
+    list-style-type: decimal;
+
+    ol {
+      list-style-type: lower-alpha;
+
+      ol {
+        list-style-type: lower-roman;
+      }
+    }
+  }
+
+  // 引用样式
+  blockquote {
+    margin: 16px 0;
+    padding: 12px 20px;
+    border-left: 4px solid #1890ff;
+    background-color: #f6f8fa;
+    color: #666;
+
+    p {
+      margin-bottom: 0;
+    }
+  }
+
+  // 代码样式
+  code {
+    background-color: #f6f8fa;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace;
+    font-size: 85%;
+    color: #d63384;
+  }
+
+  pre {
+    background-color: #f6f8fa;
+    padding: 16px;
+    border-radius: 6px;
+    overflow-x: auto;
+    margin: 16px 0;
+
+    code {
+      background-color: transparent;
+      padding: 0;
+      color: #333;
+    }
+  }
+
+  // 分割线样式
+  hr {
+    border: none;
+    border-top: 1px solid #e8e8e8;
+    margin: 24px 0;
+  }
+
+  // 强调样式
+  strong, b {
+    font-weight: 600;
+  }
+
+  em, i {
+    font-style: italic;
+  }
+
+  // 删除线样式
+  s, del {
+    text-decoration: line-through;
+  }
+
+  // 下划线样式
+  u, ins {
+    text-decoration: underline;
+  }
+
+  // 上标和下标
+  sup, sub {
+    font-size: 75%;
+    line-height: 0;
+    position: relative;
+    vertical-align: baseline;
+  }
+
+  sup {
+    top: -0.5em;
+  }
+
+  sub {
+    bottom: -0.25em;
+  }
+
+  // 文本对齐
+  .text-align-center {
+    text-align: center;
+  }
+
+  .text-align-left {
+    text-align: left;
+  }
+
+  .text-align-right {
+    text-align: right;
+  }
+
+  .text-align-justify {
+    text-align: justify;
+  }
+}

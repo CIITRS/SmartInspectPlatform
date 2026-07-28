@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  linux-amd64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: huawei-ui/package-lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: huawei-go/go.mod
+          cache-dependency-path: huawei-go/go.sum
+
+      - name: Build admin UI
+        working-directory: huawei-ui
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build backend
+        working-directory: huawei-go
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          rm -rf static
+          mkdir -p static
+          cp -a ../huawei-ui/dist/. static/
+          go test ./...
+          go build -trimpath \
+            -ldflags "-s -w -X huawei-go/internal/appversion.CurrentVersion=${RELEASE_TAG} -X huawei-go/internal/appversion.BuildCommit=${RELEASE_SHA} -X huawei-go/internal/appversion.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -o server .
+
+      - name: Package release
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          mkdir -p "SmartInspectPlatform-${RELEASE_TAG}/huawei-go"
+          cp huawei-go/server "SmartInspectPlatform-${RELEASE_TAG}/huawei-go/"
+          cp -a huawei-go/static huawei-go/Template huawei-go/fonts huawei-go/scripts "SmartInspectPlatform-${RELEASE_TAG}/huawei-go/"
+          cp huawei-go/.env.example huawei-go/go.mod huawei-go/go.sum README.md LICENSE VERSION CHANGELOG.md "SmartInspectPlatform-${RELEASE_TAG}/"
+          tar -czf "SmartInspectPlatform-${RELEASE_TAG}-linux-amd64.tar.gz" "SmartInspectPlatform-${RELEASE_TAG}"
+          sha256sum "SmartInspectPlatform-${RELEASE_TAG}-linux-amd64.tar.gz" > "SmartInspectPlatform-${RELEASE_TAG}-linux-amd64.tar.gz.sha256"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            SmartInspectPlatform-*-linux-amd64.tar.gz
+            SmartInspectPlatform-*-linux-amd64.tar.gz.sha256
+

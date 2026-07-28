@@ -1,0 +1,429 @@
+package handlers
+
+import (
+	"database/sql"
+	"encoding/csv"
+	"fmt"
+	"io"
+	"log"
+	"path/filepath"
+	"strconv"
+	"strings"
+
+	"github.com/cloudwego/hertz/pkg/app"
+	"github.com/cloudwego/hertz/pkg/common/utils"
+	"github.com/cloudwego/hertz/pkg/protocol/consts"
+	"github.com/tealeg/xlsx"
+)
+
+func normalizeMailExpressCompany(value string) string {
+	value = strings.TrimSpace(value)
+	switch value {
+	case "", "顺丰", "SF", "sf":
+		return "顺丰速运"
+	case "京东", "京东物流":
+		return "京东快递"
+	default:
+		return value
+	}
+}
+
+func mailStatusText(status string) string {
+	switch status {
+	case "shipped":
+		return "已邮寄"
+	default:
+		return "待邮寄"
+	}
+}
+
+func scanMailAddressRows(rows *sql.Rows) ([]utils.H, error) {
+	list := []utils.H{}
+	for rows.Next() {
+		var id, patientID int
+		var orderID, planID sql.NullInt64
+		var receiverName, receiverPhone, province, city, district, detailAddress, fullAddress sql.NullString
+		var expressCompany, trackingNumber, status, notes sql.NullString
+		var patientName, patientCode, patientPhone, orderNo, packageName sql.NullString
+		var detectionNumber sql.NullInt64
+		var detectionDate, shippedAt, createdAt, updatedAt sql.NullTime
+		if err := rows.Scan(
+			&id, &patientID, &orderID, &planID, &receiverName, &receiverPhone, &province, &city, &district,
+			&detailAddress, &fullAddress, &expressCompany, &trackingNumber, &status, &notes, &shippedAt, &createdAt, &updatedAt,
+			&patientName, &patientCode, &patientPhone, &orderNo, &packageName, &detectionNumber, &detectionDate,
+		); err != nil {
+			return nil, err
+		}
+		item := utils.H{
+			"id":              id,
+			"patient_id":      patientID,
+			"receiver_name":   receiverName.String,
+			"receiver_phone":  receiverPhone.String,
+			"province":        province.String,
+			"city":            city.String,
+			"district":        district.String,
+			"detail_address":  detailAddress.String,
+			"full_address":    fullAddress.String,
+			"express_company": expressCompany.String,
+			"tracking_number": trackingNumber.String,
+			"status":          status.String,
+			"status_text":     mailStatusText(status.String),
+			"notes":           notes.String,
+			"patient_name":    patientName.String,
+			"patient_code":    patientCode.String,
+			"patient_phone":   patientPhone.String,
+			"order_no":        orderNo.String,
+			"package_name":    packageName.String,
+		}
+		if orderID.Valid {
+			item["order_id"] = int(orderID.Int64)
+		}
+		if planID.Valid {
+			item["plan_id"] = int(planID.Int64)
+		}
+		if detectionNumber.Valid {
+			item["detection_number"] = int(detectionNumber.Int64)
+		}
+		if detectionDate.Valid {
+			item["detection_date"] = detectionDate.Time.Format("2006-01-02")
+		}
+		if shippedAt.Valid {
+			item["shipped_at"] = shippedAt.Time.Format("2006-01-02 15:04:05")
+		}
+		if createdAt.Valid {
+			item["created_at"] = createdAt.Time.Format("2006-01-02 15:04:05")
+		}
+		if updatedAt.Valid {
+			item["updated_at"] = updatedAt.Time.Format("2006-01-02 15:04:05")
+		}
+		list = append(list, item)
+	}
+	return list, rows.Err()
+}
+
+func HandleAdminListMailAppointments(c *app.RequestContext, db *sql.DB) {
+	current, _ := strconv.Atoi(c.Query("current"))
+	pageSize, _ := strconv.Atoi(c.Query("pageSize"))
+	if current <= 0 {
+		current = 1
+	}
+	if pageSize <= 0 || pageSize > 200 {
+		pageSize = 20
+	}
+	offset := (current - 1) * pageSize
+
+	status := strings.TrimSpace(c.Query("status"))
+	keyword := strings.TrimSpace(c.Query("keyword"))
+	conditions := []string{"1=1"}
+	args := []interface{}{}
+	if userID, ok := GetUserID(c); ok {
+		roleNames := getUserRoleNames(db, userID)
+		if hasRoleName(roleNames, "销售") && !hasRoleName(roleNames, "管理员", "IT") {
+			salesCode := salesPersonCodeForUser(db, userID)
+			conditions = append(conditions, "p.sales_person = ?")
+			args = append(args, salesCode)
+		}
+	}
+	if status != "" {
+		conditions = append(conditions, "ma.status = ?")
+		args = append(args, status)
+	}
+	if keyword != "" {
+		conditions = append(conditions, "(p.name LIKE ? OR p.patient_code LIKE ? OR p.phone LIKE ? OR ma.receiver_name LIKE ? OR ma.receiver_phone LIKE ? OR ma.tracking_number LIKE ?)")
+		like := "%" + keyword + "%"
+		args = append(args, like, like, like, like, like, like)
+	}
+	whereSQL := strings.Join(conditions, " AND ")
+
+	var total int
+	countArgs := append([]interface{}{}, args...)
+	if err := db.QueryRow(`SELECT COUNT(*)
+		FROM mail_address ma
+		JOIN detect_patient p ON ma.detect_patient_id = p.id
+		LEFT JOIN sale_order so ON ma.sale_order_id = so.id
+		LEFT JOIN sale_package sp ON so.sale_package_id = sp.id
+		WHERE `+whereSQL, countArgs...).Scan(&total); err != nil {
+		log.Printf("Count mail appointments error: %v", err)
+		c.JSON(consts.StatusInternalServerError, ApiResponse{Code: 500, Success: false, Message: "查询失败", Data: nil})
+		return
+	}
+
+	queryArgs := append([]interface{}{}, args...)
+	queryArgs = append(queryArgs, pageSize, offset)
+	rows, err := db.Query(`SELECT ma.id, ma.detect_patient_id, ma.sale_order_id, ma.detection_plan_id,
+			ma.receiver_name, ma.receiver_phone, ma.province, ma.city, ma.district, ma.detail_address, ma.full_address,
+			ma.express_company, ma.tracking_number, ma.status, ma.notes, ma.shipped_at, ma.created_at, ma.updated_at,
+			p.name, p.patient_code, p.phone, so.sale_order_no, sp.name, dp.detection_number, dp.detection_date
+		FROM mail_address ma
+		JOIN detect_patient p ON ma.detect_patient_id = p.id
+		LEFT JOIN sale_order so ON ma.sale_order_id = so.id
+		LEFT JOIN sale_package sp ON so.sale_package_id = sp.id
+		LEFT JOIN sale_detection_plan dp ON ma.detection_plan_id = dp.id
+		WHERE `+whereSQL+`
+		ORDER BY ma.created_at DESC
+		LIMIT ? OFFSET ?`, queryArgs...)
+	if err != nil {
+		log.Printf("List mail appointments error: %v", err)
+		c.JSON(consts.StatusInternalServerError, ApiResponse{Code: 500, Success: false, Message: "查询失败", Data: nil})
+		return
+	}
+	defer rows.Close()
+
+	list, err := scanMailAddressRows(rows)
+	if err != nil {
+		log.Printf("Scan mail appointments error: %v", err)
+		c.JSON(consts.StatusInternalServerError, ApiResponse{Code: 500, Success: false, Message: "查询失败", Data: nil})
+		return
+	}
+
+	c.JSON(consts.StatusOK, ApiResponse{Code: 200, Success: true, Message: "获取成功", Data: utils.H{"list": list, "total": total}})
+}
+
+func HandleAdminUpdateMailAppointment(c *app.RequestContext, db *sql.DB) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id <= 0 {
+		c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: "预约ID无效", Data: nil})
+		return
+	}
+	var req struct {
+		ExpressCompany string `json:"express_company"`
+		TrackingNumber string `json:"tracking_number"`
+		Status         string `json:"status"`
+		Notes          string `json:"notes"`
+	}
+	if err := c.Bind(&req); err != nil {
+		c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: "请求参数错误", Data: utils.H{"error": err.Error()}})
+		return
+	}
+	status := strings.TrimSpace(req.Status)
+	if strings.TrimSpace(req.TrackingNumber) != "" {
+		status = "shipped"
+	}
+	if status != "shipped" {
+		status = "requested"
+	}
+	_, err = db.Exec(`UPDATE mail_address
+		SET express_company = ?, tracking_number = ?, status = ?, notes = ?,
+			shipped_at = CASE WHEN ? = 'shipped' AND shipped_at IS NULL THEN NOW() ELSE shipped_at END,
+			updated_at = NOW()
+		WHERE id = ?`,
+		normalizeMailExpressCompany(req.ExpressCompany), strings.TrimSpace(req.TrackingNumber), status, req.Notes, status, id)
+	if err != nil {
+		log.Printf("Update mail appointment error: %v", err)
+		c.JSON(consts.StatusInternalServerError, ApiResponse{Code: 500, Success: false, Message: "保存失败", Data: utils.H{"error": err.Error()}})
+		return
+	}
+	c.JSON(consts.StatusOK, ApiResponse{Code: 200, Success: true, Message: "保存成功", Data: nil})
+}
+
+type appointmentTrackingImportRow struct {
+	AppointmentID  string
+	PatientCode    string
+	PatientPhone   string
+	ReceiverPhone  string
+	ExpressCompany string
+	TrackingNumber string
+}
+
+func normalizeAppointmentHeader(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	value = strings.TrimPrefix(value, "\ufeff")
+	value = strings.ReplaceAll(value, " ", "")
+	value = strings.ReplaceAll(value, "_", "")
+	value = strings.ReplaceAll(value, "-", "")
+	switch value {
+	case "预约id", "预约编号", "id", "appointmentid", "mailaddressid":
+		return "appointment_id"
+	case "患者编号", "患者id", "patientcode":
+		return "patient_code"
+	case "患者电话", "患者手机号", "手机号", "联系电话", "patientphone", "phone":
+		return "patient_phone"
+	case "收件人电话", "收件电话", "receiverphone":
+		return "receiver_phone"
+	case "快递公司", "物流公司", "expresscompany":
+		return "express_company"
+	case "运单号", "快递单号", "物流单号", "trackingnumber", "trackingno":
+		return "tracking_number"
+	default:
+		return value
+	}
+}
+
+func appointmentTrackingRowsFromTable(records [][]string) []appointmentTrackingImportRow {
+	rows := []appointmentTrackingImportRow{}
+	if len(records) == 0 {
+		return rows
+	}
+	headerIndexes := map[string]int{}
+	for idx, header := range records[0] {
+		headerIndexes[normalizeAppointmentHeader(header)] = idx
+	}
+	get := func(record []string, key string) string {
+		idx, ok := headerIndexes[key]
+		if !ok || idx < 0 || idx >= len(record) {
+			return ""
+		}
+		return strings.TrimSpace(record[idx])
+	}
+	for _, record := range records[1:] {
+		row := appointmentTrackingImportRow{
+			AppointmentID:  get(record, "appointment_id"),
+			PatientCode:    get(record, "patient_code"),
+			PatientPhone:   get(record, "patient_phone"),
+			ReceiverPhone:  get(record, "receiver_phone"),
+			ExpressCompany: get(record, "express_company"),
+			TrackingNumber: get(record, "tracking_number"),
+		}
+		if row.AppointmentID == "" && row.PatientCode == "" && row.PatientPhone == "" && row.ReceiverPhone == "" && row.TrackingNumber == "" {
+			continue
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+func parseAppointmentTrackingImport(file io.Reader, fileSize int64, filename string) ([]appointmentTrackingImportRow, error) {
+	ext := strings.ToLower(filepath.Ext(filename))
+	if ext == ".csv" {
+		reader := csv.NewReader(file)
+		reader.FieldsPerRecord = -1
+		reader.TrimLeadingSpace = true
+		records, err := reader.ReadAll()
+		if err != nil {
+			return nil, err
+		}
+		return appointmentTrackingRowsFromTable(records), nil
+	}
+
+	readerAt, ok := file.(io.ReaderAt)
+	if !ok {
+		return nil, fmt.Errorf("文件读取器不支持Excel解析")
+	}
+	xlFile, err := xlsx.OpenReaderAt(readerAt, fileSize)
+	if err != nil {
+		return nil, err
+	}
+	if len(xlFile.Sheets) == 0 {
+		return nil, fmt.Errorf("Excel中没有工作表")
+	}
+	records := [][]string{}
+	for _, row := range xlFile.Sheets[0].Rows {
+		values := []string{}
+		for _, cell := range row.Cells {
+			values = append(values, strings.TrimSpace(cell.String()))
+		}
+		records = append(records, values)
+	}
+	return appointmentTrackingRowsFromTable(records), nil
+}
+
+func findAppointmentIDForTracking(db *sql.DB, row appointmentTrackingImportRow) (int, error) {
+	if row.AppointmentID != "" {
+		id, err := strconv.Atoi(row.AppointmentID)
+		if err != nil || id <= 0 {
+			return 0, fmt.Errorf("预约ID无效")
+		}
+		var exists int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM mail_address WHERE id = ?`, id).Scan(&exists); err != nil {
+			return 0, err
+		}
+		if exists == 0 {
+			return 0, fmt.Errorf("预约ID不存在")
+		}
+		return id, nil
+	}
+
+	conditions := []string{}
+	args := []interface{}{}
+	if row.PatientCode != "" {
+		conditions = append(conditions, "p.patient_code = ?")
+		args = append(args, row.PatientCode)
+	}
+	if row.PatientPhone != "" {
+		conditions = append(conditions, "p.phone = ?")
+		args = append(args, row.PatientPhone)
+	}
+	if row.ReceiverPhone != "" {
+		conditions = append(conditions, "ma.receiver_phone = ?")
+		args = append(args, row.ReceiverPhone)
+	}
+	if len(conditions) == 0 {
+		return 0, fmt.Errorf("缺少预约ID或患者识别信息")
+	}
+	query := `SELECT ma.id
+		FROM mail_address ma
+		JOIN detect_patient p ON ma.detect_patient_id = p.id
+		WHERE ` + strings.Join(conditions, " AND ") + `
+		ORDER BY CASE WHEN ma.status = 'requested' THEN 0 ELSE 1 END, ma.created_at DESC
+		LIMIT 1`
+	var id int
+	if err := db.QueryRow(query, args...).Scan(&id); err != nil {
+		if err == sql.ErrNoRows {
+			return 0, fmt.Errorf("未找到匹配预约")
+		}
+		return 0, err
+	}
+	return id, nil
+}
+
+func HandleAdminUploadAppointmentTracking(c *app.RequestContext, db *sql.DB) {
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: "请选择要上传的文件", Data: nil})
+		return
+	}
+	file, err := fileHeader.Open()
+	if err != nil {
+		c.JSON(consts.StatusInternalServerError, ApiResponse{Code: 500, Success: false, Message: "文件打开失败", Data: nil})
+		return
+	}
+	defer file.Close()
+
+	rows, err := parseAppointmentTrackingImport(file, fileHeader.Size, fileHeader.Filename)
+	if err != nil {
+		log.Printf("Parse appointment tracking import error: %v", err)
+		c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: "文件格式错误，请上传CSV或Excel文件", Data: utils.H{"error": err.Error()}})
+		return
+	}
+	if len(rows) == 0 {
+		c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: "文件中没有可导入的数据", Data: nil})
+		return
+	}
+
+	successCount := 0
+	failed := []utils.H{}
+	for index, row := range rows {
+		rowNo := index + 2
+		if strings.TrimSpace(row.TrackingNumber) == "" {
+			failed = append(failed, utils.H{"row": rowNo, "reason": "运单号为空"})
+			continue
+		}
+		id, err := findAppointmentIDForTracking(db, row)
+		if err != nil {
+			failed = append(failed, utils.H{"row": rowNo, "reason": err.Error()})
+			continue
+		}
+		_, err = db.Exec(`UPDATE mail_address
+			SET express_company = ?, tracking_number = ?, status = 'shipped',
+				shipped_at = CASE WHEN shipped_at IS NULL THEN NOW() ELSE shipped_at END,
+				updated_at = NOW()
+			WHERE id = ?`,
+			normalizeMailExpressCompany(row.ExpressCompany), strings.TrimSpace(row.TrackingNumber), id)
+		if err != nil {
+			failed = append(failed, utils.H{"row": rowNo, "reason": "保存失败: " + err.Error()})
+			continue
+		}
+		successCount++
+	}
+
+	c.JSON(consts.StatusOK, ApiResponse{
+		Code:    200,
+		Success: true,
+		Message: fmt.Sprintf("导入完成，成功%d条，失败%d条", successCount, len(failed)),
+		Data: utils.H{
+			"success_count": successCount,
+			"failed_count":  len(failed),
+			"failed":        failed,
+		},
+	})
+}

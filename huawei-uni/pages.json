@@ -1,0 +1,241 @@
+{
+  "pages": [
+    {
+      "path": "pages/home/index",
+      "style": {
+        "navigationBarTitleText": "首页"
+      }
+    },
+    {
+      "path": "pages/ai-assistant/index",
+      "style": {
+        "navigationBarTitleText": "华微小智"
+      }
+    },
+    {
+      "path": "pages/my/index",
+      "style": {
+        "navigationBarTitleText": "我的"
+      }
+    },
+    {
+      "path": "pages/login/index",
+      "style": {
+        "navigationBarTitleText": "登录"
+      }
+    },
+    {
+      "path": "pages/login/sms",
+      "style": {
+        "navigationBarTitleText": "短信验证码登录"
+      }
+    },
+    {
+      "path": "pages/invite/index",
+      "style": {
+        "navigationBarTitleText": "客户信息登记"
+      }
+    },
+    {
+      "path": "pages/patient/appointment/index",
+      "style": {
+        "navigationBarTitleText": "预约检测"
+      }
+    },
+    {
+      "path": "pages/patient/appointment-mail/index",
+      "style": {
+        "navigationBarTitleText": "预约试剂盒邮寄"
+      }
+    },
+    {
+      "path": "pages/patient/reports/index",
+      "style": {
+        "navigationBarTitleText": "报告查询"
+      }
+    },
+    {
+      "path": "pages/patient/report-detail/index",
+      "style": {
+        "navigationBarTitleText": "报告详情"
+      }
+    },
+    {
+      "path": "pages/patient/profile/index",
+      "style": {
+        "navigationBarTitleText": "信息完善"
+      }
+    },
+    {
+      "path": "pages/patient/mail-sample/index",
+      "style": {
+        "navigationBarTitleText": "邮寄样本"
+      }
+    },
+    {
+      "path": "pages/patient/packages/index",
+      "style": {
+        "navigationBarTitleText": "我的套餐"
+      }
+    },
+    {
+      "path": "pages/patient/progress/index",
+      "style": {
+        "navigationBarTitleText": "进度查询"
+      }
+    },
+    {
+      "path": "pages/patient/samples/index",
+      "style": {
+        "navigationBarTitleText": "我的样本"
+      }
+    },
+    {
+      "path": "pages/patient/follow-up/index",
+      "style": {
+        "navigationBarTitleText": "随访管理"
+      }
+    },
+    {
+      "path": "pages/about/index",
+      "style": {
+        "navigationBarTitleText": "关于"
+      }
+    },
+    {
+      "path": "pages/about/privacy",
+      "style": {
+        "navigationBarTitleText": "隐私协议"
+      }
+    },
+    {
+      "path": "pages/about/service",
+      "style": {
+        "navigationBarTitleText": "用户服务协议"
+      }
+    },
+    {
+      "path": "pages/contact/index",
+      "style": {
+        "navigationBarTitleText": "联系我们"
+      }
+    },
+    {
+      "path": "pages/help-center/index",
+      "style": {
+        "navigationBarTitleText": "帮助中心"
+      }
+    },
+    {
+      "path": "pages/science-care/index",
+      "style": {
+        "navigationBarTitleText": "科学疗养"
+      }
+    },
+    {
+      "path": "pages/employee/reports/index",
+      "style": {
+        "navigationBarTitleText": "报告查询"
+      }
+    },
+    {
+      "path": "pages/employee/report-review/index",
+      "style": {
+        "navigationBarTitleText": "报告审核"
+      }
+    },
+    {
+      "path": "pages/employee/sample-receive/index",
+      "style": {
+        "navigationBarTitleText": "样本接收"
+      }
+    },
+    {
+      "path": "pages/employee/patient-create/index",
+      "style": {
+        "navigationBarTitleText": "新患录入"
+      }
+    },
+    {
+      "path": "pages/employee/patients/index",
+      "style": {
+        "navigationBarTitleText": "我的患者"
+      }
+    },
+    {
+      "path": "pages/employee/patient-detail/index",
+      "style": {
+        "navigationBarTitleText": "患者详情"
+      }
+    },
+    {
+      "path": "pages/employee/patient-complete/index",
+      "style": {
+        "navigationBarTitleText": "诊断完善"
+      }
+    },
+    {
+      "path": "pages/employee/sample-allocate/index",
+      "style": {
+        "navigationBarTitleText": "新增样本"
+      }
+    },
+    {
+      "path": "pages/employee/samples/index",
+      "style": {
+        "navigationBarTitleText": "样本详情"
+      }
+    },
+    {
+      "path": "pages/employee/sample-detail/index",
+      "style": {
+        "navigationBarTitleText": "样本详情"
+      }
+    },
+    {
+      "path": "pages/employee/invite-code/index",
+      "style": {
+        "navigationBarTitleText": "我的邀请码"
+      }
+    },
+    {
+      "path": "pages/employee/report-detail/index",
+      "style": {
+        "navigationBarTitleText": "报告详情"
+      }
+    }
+  ],
+  "subPackages": [],
+  "tabBar": {
+    "color": "#666",
+    "selectedColor": "#1677ff",
+    "backgroundColor": "#fff",
+    "borderStyle": "black",
+    "list": [
+      {
+        "pagePath": "pages/home/index",
+        "iconPath": "static/home.png",
+        "selectedIconPath": "static/home-active.png",
+        "text": "首页"
+      },
+      {
+        "pagePath": "pages/ai-assistant/index",
+        "iconPath": "static/chat.png",
+        "selectedIconPath": "static/chat-active.png",
+        "text": "华微小智"
+      },
+      {
+        "pagePath": "pages/my/index",
+        "iconPath": "static/user.png",
+        "selectedIconPath": "static/user-active.png",
+        "text": "我的"
+      }
+    ]
+  },
+  "globalStyle": {
+    "navigationBarTextStyle": "black",
+    "navigationBarTitleText": "华微智检",
+    "navigationBarBackgroundColor": "#fff",
+    "backgroundColor": "#f5f5f5"
+  }
+}
