@@ -1,6 +1,6 @@
 {
   "name": "huawei-uni",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "华微智检小程序",
   "main": "main.js",
   "scripts": {

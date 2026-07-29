@@ -4,6 +4,7 @@ import { useNavigate, useModel } from '@umijs/max';
 import { EditOutlined, EyeOutlined } from '@ant-design/icons';
 import { listPatients, getPatientById, getSamplesByPatientId } from '@/services/api';
 import dayjs from 'dayjs';
+import PatientReportPreview from '@/components/PatientReportPreview';
 
 const { TabPane } = Tabs;
 
@@ -389,22 +390,11 @@ const Perfect: React.FC = () => {
                     const fileName = filePath.split('/').pop() || filePath;
                     return (
                       <div key={index} style={{ marginBottom: 8, display: 'flex', alignItems: 'center' }}>
-                        <a 
-                          href={`/api/file/view?path=${encodeURIComponent(filePath)}`} 
-                          target="_blank" 
-                          rel="noopener noreferrer"
-                          style={{ marginRight: 16 }}
-                        >
-                          查看文件
-                        </a>
-                        <a 
-                          href={`/api/file/download?path=${encodeURIComponent(filePath)}`} 
-                          target="_blank" 
-                          rel="noopener noreferrer"
-                        >
-                          下载文件
-                        </a>
-                        <span style={{ marginLeft: 16, color: '#666' }}>{fileName}</span>
+                        <PatientReportPreview
+                          patientCode={currentPatient.patientCode}
+                          fileUrl={filePath.trim()}
+                          label={fileName}
+                        />
                       </div>
                     );
                   })}

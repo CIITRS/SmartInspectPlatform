@@ -6,6 +6,7 @@ import { useNavigate, useModel } from '@umijs/max';
 import { PlusOutlined, UploadOutlined, DeleteOutlined, EditOutlined, DownloadOutlined, ReloadOutlined, SearchOutlined, FileExcelOutlined, DeleteFilled, UndoOutlined, EditTwoTone, InboxOutlined } from '@ant-design/icons';
 import { listPatients, deletePatient, getPatientById, getSamplesByPatientId, listSalesAssignmentPatients, assignSalesToPatient } from '@/services/api';
 import dayjs from 'dayjs';
+import PatientReportPreview from '@/components/PatientReportPreview';
 
 const getSalesPersonCode = (user: any) =>
   String(user?.employee_id || '').trim();
@@ -789,9 +790,11 @@ const List: React.FC = () => {
                           <ul>
                             {currentPatient.reportFiles.split(',').map((file: string) => (
                               <li key={file}>
-                                <a href={file} target="_blank" rel="noopener noreferrer">
-                                  {file.split('/').pop()}
-                                </a>
+                                <PatientReportPreview
+                                  patientCode={currentPatient.patientCode}
+                                  fileUrl={file.trim()}
+                                  label={file.split('/').pop()}
+                                />
                               </li>
                             ))}
                           </ul>
