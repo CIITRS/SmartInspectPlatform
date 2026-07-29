@@ -37,6 +37,14 @@ const Edit: React.FC = () => {
   const [salesLoading, setSalesLoading] = useState(false);
   const [completionStatus, setCompletionStatus] = useState(0);
   const [patientStatus, setPatientStatus] = useState<number>(1); // 默认值设为患病
+  const [reportPreview, setReportPreview] = useState<{
+    open: boolean;
+    loading: boolean;
+    name: string;
+    url: string;
+    kind: 'image' | 'pdf' | 'other';
+    localObjectUrl?: boolean;
+  }>({ open: false, loading: false, name: '', url: '', kind: 'other' });
   const idDocumentType = Form.useWatch('idDocumentType', form) || '居民身份证';
 
   // 获取销售岗用户列表
@@ -315,6 +323,55 @@ const Edit: React.FC = () => {
       },
     });
     return false;
+  };
+
+  const reportPreviewKind = (file: any): 'image' | 'pdf' | 'other' => {
+    const type = String(file?.type || file?.originFileObj?.type || '').toLowerCase();
+    const name = String(file?.name || file?.url || '').split('?')[0].toLowerCase();
+    if (type.startsWith('image/') || /\.(jpg|jpeg|png|gif|webp|bmp)$/.test(name)) return 'image';
+    if (type === 'application/pdf' || name.endsWith('.pdf')) return 'pdf';
+    return 'other';
+  };
+
+  const handlePreviewReport = async (file: any) => {
+    const kind = reportPreviewKind(file);
+    if (file.originFileObj && !file.isExistingReport) {
+      const localURL = URL.createObjectURL(file.originFileObj);
+      setReportPreview({
+        open: true, loading: false, name: file.name, url: localURL, kind, localObjectUrl: true,
+      });
+      return;
+    }
+    if (!file.url || !patientCode) {
+      appMessage.error('报告文件地址不存在');
+      return;
+    }
+    setReportPreview({ open: true, loading: true, name: file.name, url: '', kind });
+    try {
+      const response = await fetch(
+        `/api/patients/${encodeURIComponent(String(patientCode))}/report-files/preview?file_url=${encodeURIComponent(file.url)}`,
+        {
+          headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` },
+        },
+      );
+      const result = await response.json();
+      if (!response.ok || result.code !== 200 || !result.data?.preview_url) {
+        throw new Error(result.message || '报告预览失败');
+      }
+      setReportPreview({
+        open: true, loading: false, name: file.name, url: result.data.preview_url, kind,
+      });
+    } catch (error: any) {
+      setReportPreview((current) => ({ ...current, open: false, loading: false }));
+      appMessage.error(error?.message || '报告预览失败');
+    }
+  };
+
+  const closeReportPreview = () => {
+    if (reportPreview.localObjectUrl && reportPreview.url) {
+      URL.revokeObjectURL(reportPreview.url);
+    }
+    setReportPreview({ open: false, loading: false, name: '', url: '', kind: 'other' });
   };
 
   // 文件上传
@@ -627,6 +684,7 @@ const Edit: React.FC = () => {
                   beforeUpload={beforeUpload}
                   onChange={handleUploadChange}
                   onRemove={handleRemoveReport}
+                  onPreview={handlePreviewReport}
                   multiple
                 >
                   <p className="ant-upload-drag-icon">
@@ -651,6 +709,43 @@ const Edit: React.FC = () => {
           </Form.Item>
         </Form>
       </Card>
+      <Modal
+        title={reportPreview.name || '报告预览'}
+        open={reportPreview.open}
+        onCancel={closeReportPreview}
+        footer={null}
+        width="min(960px, 92vw)"
+        destroyOnClose
+      >
+        <Spin spinning={reportPreview.loading}>
+          {!reportPreview.loading && reportPreview.kind === 'image' && reportPreview.url && (
+            <div style={{ textAlign: 'center', maxHeight: '72vh', overflow: 'auto' }}>
+              <img
+                src={reportPreview.url}
+                alt={reportPreview.name}
+                style={{ display: 'block', maxWidth: '100%', height: 'auto', margin: '0 auto' }}
+              />
+            </div>
+          )}
+          {!reportPreview.loading && reportPreview.kind === 'pdf' && reportPreview.url && (
+            <iframe
+              src={reportPreview.url}
+              title={reportPreview.name}
+              style={{ width: '100%', height: '72vh', border: 0 }}
+            />
+          )}
+          {!reportPreview.loading && reportPreview.kind === 'other' && reportPreview.url && (
+            <div style={{ textAlign: 'center', padding: 32 }}>
+              当前浏览器不支持直接预览此文件格式。
+              <div style={{ marginTop: 16 }}>
+                <Button type="primary" onClick={() => window.open(reportPreview.url, '_blank', 'noopener,noreferrer')}>
+                  打开文件
+                </Button>
+              </div>
+            </div>
+          )}
+        </Spin>
+      </Modal>
     </div>
   );
 };

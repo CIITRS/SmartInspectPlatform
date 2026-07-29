@@ -8,6 +8,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -54,6 +56,41 @@ func TestGenerateQiniuUploadToken(t *testing.T) {
 	_, _ = mac.Write([]byte(parts[2]))
 	if parts[1] != base64.URLEncoding.EncodeToString(mac.Sum(nil)) {
 		t.Fatal("signature does not match HMAC-SHA1 policy signature")
+	}
+}
+
+func TestGenerateQiniuPrivateDownloadURL(t *testing.T) {
+	config := QiniuStorageConfig{
+		Enabled: true, AccessKey: "test-access", SecretKey: "test-secret",
+		Bucket: "test-bucket", Domain: "https://files.example.com",
+	}
+	now := time.Unix(1_700_000_000, 0)
+	got, deadline, err := generateQiniuPrivateDownloadURL(
+		config,
+		"https://files.example.com/uploads/patient_report/HWP1/report01.pdf",
+		now,
+		10*time.Minute,
+	)
+	if err != nil {
+		t.Fatalf("generateQiniuPrivateDownloadURL() error = %v", err)
+	}
+	unsignedURL := fmt.Sprintf(
+		"https://files.example.com/uploads/patient_report/HWP1/report01.pdf?e=%d",
+		now.Add(10*time.Minute).Unix(),
+	)
+	mac := hmac.New(sha1.New, []byte(config.SecretKey))
+	_, _ = mac.Write([]byte(unsignedURL))
+	want := unsignedURL + "&token=" + config.AccessKey + ":" + base64.URLEncoding.EncodeToString(mac.Sum(nil))
+	if got != want {
+		t.Fatalf("download URL = %q, want %q", got, want)
+	}
+	if deadline != now.Add(10*time.Minute).Unix() {
+		t.Fatalf("deadline = %d", deadline)
+	}
+	if _, _, err := generateQiniuPrivateDownloadURL(
+		config, "https://attacker.example/report.pdf", now, time.Minute,
+	); err == nil {
+		t.Fatal("expected mismatched domain to be rejected")
 	}
 }
 
@@ -165,6 +202,49 @@ func TestQiniuUploadIntegration(t *testing.T) {
 	}
 	if fileURL != qiniuObjectURL(config.Domain, objectName) {
 		t.Fatalf("file URL = %q", fileURL)
+	}
+}
+
+func TestQiniuPrivateDownloadIntegration(t *testing.T) {
+	if os.Getenv("QINIU_PRIVATE_DOWNLOAD_INTEGRATION") != "1" {
+		t.Skip("set QINIU_PRIVATE_DOWNLOAD_INTEGRATION=1 to verify private object access")
+	}
+	rawURL := strings.TrimSpace(os.Getenv("QINIU_PRIVATE_DOWNLOAD_URL"))
+	if rawURL == "" {
+		t.Fatal("QINIU_PRIVATE_DOWNLOAD_URL is required")
+	}
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=True&loc=Local",
+		os.Getenv("DB_USER"),
+		os.Getenv("DB_PASSWORD"),
+		os.Getenv("DB_HOST"),
+		os.Getenv("DB_PORT"),
+		os.Getenv("DB_NAME"),
+	)
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	defer db.Close()
+	if err := db.Ping(); err != nil {
+		t.Fatalf("db.Ping() error = %v", err)
+	}
+	previousDB := DB
+	SetDB(db)
+	defer SetDB(previousDB)
+
+	config := loadQiniuStorageConfig()
+	signedURL, _, err := generateQiniuPrivateDownloadURL(config, rawURL, time.Now(), time.Minute)
+	if err != nil {
+		t.Fatalf("sign private download URL: %v", err)
+	}
+	response, err := (&http.Client{Timeout: 30 * time.Second}).Get(signedURL)
+	if err != nil {
+		t.Fatalf("download private object: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 1024))
+		t.Fatalf("download private object status = %d, body = %s", response.StatusCode, strings.TrimSpace(string(body)))
 	}
 }
 

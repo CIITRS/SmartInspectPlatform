@@ -162,6 +162,34 @@ func generateQiniuUploadToken(config QiniuStorageConfig, objectName string, now 
 	return config.AccessKey + ":" + encodedSign + ":" + encodedPolicy, deadline, nil
 }
 
+func generateQiniuPrivateDownloadURL(config QiniuStorageConfig, rawURL string, now time.Time, ttl time.Duration) (string, int64, error) {
+	if !config.configured() {
+		return "", 0, fmt.Errorf("七牛云存储尚未完整配置")
+	}
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", 0, fmt.Errorf("报告文件地址无效")
+	}
+	configDomain, err := url.Parse(strings.TrimRight(config.Domain, "/"))
+	if err != nil || !strings.EqualFold(parsed.Scheme, configDomain.Scheme) || !strings.EqualFold(parsed.Host, configDomain.Host) {
+		return "", 0, fmt.Errorf("报告文件不属于已配置的七牛云域名")
+	}
+	if ttl <= 0 {
+		ttl = 10 * time.Minute
+	}
+	deadline := now.Add(ttl).Unix()
+	query := parsed.Query()
+	query.Del("token")
+	query.Set("e", strconv.FormatInt(deadline, 10))
+	parsed.RawQuery = query.Encode()
+	unsignedURL := parsed.String()
+
+	mac := hmac.New(sha1.New, []byte(config.SecretKey))
+	_, _ = mac.Write([]byte(unsignedURL))
+	downloadToken := config.AccessKey + ":" + qiniuURLSafeBase64(mac.Sum(nil))
+	return unsignedURL + "&token=" + downloadToken, deadline, nil
+}
+
 func qiniuObjectURL(domain, objectName string) string {
 	parts := strings.Split(strings.ReplaceAll(objectName, "\\", "/"), "/")
 	for index, part := range parts {
