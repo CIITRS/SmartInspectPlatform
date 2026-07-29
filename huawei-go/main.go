@@ -97,6 +97,16 @@ func main() {
 		} else {
 			fmt.Println("健康筛查/肠癌旧版 Excel 公式已校准")
 		}
+		if err := handlers.EnsureU5UrologyModels(db); err != nil {
+			log.Printf("配置泌尿 U5 血液/尿液模型失败: %v", err)
+		} else {
+			fmt.Println("泌尿 U5 血液/尿液模型及阈值已配置")
+		}
+		if err := handlers.EnsureUrineReportPositionsMatchBlood(db); err != nil {
+			log.Printf("复制尿液报告坐标失败: %v", err)
+		} else {
+			fmt.Println("尿液高敏/超敏报告坐标已校准")
+		}
 		handlers.EnsureDefaultStaff(db)
 		handlers.StartSMSCodeCleanup(db)
 		fmt.Println("默认员工账号与角色权限已校准")

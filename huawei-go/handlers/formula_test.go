@@ -79,6 +79,68 @@ func TestV8FormulaCountGeThresholdUsesRawSum(t *testing.T) {
 	}
 }
 
+func TestU5UrologyFormulasMatchProvidedRows(t *testing.T) {
+	cases := []struct {
+		name      string
+		formula   string
+		threshold float64
+		variables map[string]float64
+		want      float64
+	}{
+		{
+			name: "blood row 1", formula: u5UrologyBloodFormula, threshold: 100,
+			variables: map[string]float64{
+				"B14_PTPRU": 18, "B37_HIST1H4F": 18.5, "B51_RUNX3": 299,
+				"B55_REC8": 879, "B72_THBS1": 2739, "B76_OTX1": 195, "B78_TW1ST1": 51.5,
+			},
+			want: 23.823659503159877,
+		},
+		{
+			name: "urine row 1", formula: u5UrologyUrineFormula, threshold: 300,
+			variables: map[string]float64{
+				"B14_PTPRU": 1516.5, "B37_HIST1H4F": 511.5, "B51_RUNX3": 2100,
+				"B55_REC8": 1908, "B72_THBS1": 2488, "B76_OTX1": 2729, "B78_TW1ST1": 194,
+			},
+			want: 51.731091035939045,
+		},
+		{
+			name: "blood row 2", formula: u5UrologyBloodFormula, threshold: 100,
+			variables: map[string]float64{
+				"B14_PTPRU": 19, "B37_HIST1H4F": 179, "B51_RUNX3": 444,
+				"B55_REC8": 684, "B72_THBS1": 2717, "B76_OTX1": 173, "B78_TW1ST1": 63,
+			},
+			want: 30.397620124224748,
+		},
+		{
+			name: "urine row 2", formula: u5UrologyUrineFormula, threshold: 300,
+			variables: map[string]float64{
+				"B14_PTPRU": 304, "B37_HIST1H4F": 21, "B51_RUNX3": 403,
+				"B55_REC8": 599, "B72_THBS1": 2788.5, "B76_OTX1": 1517, "B78_TW1ST1": 20,
+			},
+			want: 30.722150358183633,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			thresholds := make(map[string]float64, len(tc.variables))
+			for gene := range tc.variables {
+				thresholds[gene] = tc.threshold
+			}
+			evaluator := NewFormulaEvaluator(tc.formula)
+			evaluator.SetVariables(tc.variables)
+			evaluator.SetThresholds(thresholds)
+			got, err := evaluator.Evaluate()
+			if err != nil {
+				t.Fatalf("Evaluate() error = %v", err)
+			}
+			if math.Abs(got-tc.want) > 1e-9 {
+				t.Fatalf("Evaluate() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestNestedPowFormulaWithWhitespace(t *testing.T) {
 	formula := `sqrt (
 		pow (sum (B14_PTPRU, B37_HIST1H4F, B51_ RUNX3, B55_ REC8, B72_ THBS1, B76_OTX1, B78_TW1ST1) / B72_THBS1, 2)

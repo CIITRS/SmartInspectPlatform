@@ -146,6 +146,64 @@ func ensureDefaultReportPositions(db *sql.DB) error {
 	return nil
 }
 
+const urineReportPositionBloodCopyMigration = "migration.report_position.urine_from_blood.v1"
+
+// EnsureUrineReportPositionsMatchBlood performs the requested one-time
+// coordinate copy. Only positions_json is copied; the urine background_path,
+// name, assignment and active state are deliberately left untouched.
+func EnsureUrineReportPositionsMatchBlood(db *sql.DB) error {
+	if db == nil {
+		return nil
+	}
+	if err := ensureDefaultReportPositions(db); err != nil {
+		return err
+	}
+
+	var migrated int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM setting_system WHERE key_name = ?`,
+		urineReportPositionBloodCopyMigration).Scan(&migrated); err != nil {
+		return err
+	}
+	if migrated > 0 {
+		return nil
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	pairs := [][2]string{
+		{"urine_normal", "blood_normal"},
+		{"urine_high", "blood_high"},
+	}
+	for _, pair := range pairs {
+		var pairCount int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM setting_report_position
+			WHERE position_key IN (?, ?)`, pair[0], pair[1]).Scan(&pairCount); err != nil {
+			return err
+		}
+		if pairCount != 2 {
+			return fmt.Errorf("report position pair %s/%s is incomplete", pair[0], pair[1])
+		}
+		if _, err := tx.Exec(`UPDATE setting_report_position AS urine
+			JOIN setting_report_position AS blood ON blood.position_key = ?
+			SET urine.positions_json = blood.positions_json, urine.updated_at = NOW()
+			WHERE urine.position_key = ?`, pair[1], pair[0]); err != nil {
+			return fmt.Errorf("copy %s coordinates to %s: %w", pair[1], pair[0], err)
+		}
+	}
+
+	if _, err := tx.Exec(`INSERT INTO setting_system
+		(key_name, key_value, key_type, is_encrypted, description, created_at, updated_at)
+		VALUES (?, 'completed', 'text', 0, '尿液高敏/超敏报告复制血液坐标，保留尿液背景', NOW(), NOW())`,
+		urineReportPositionBloodCopyMigration); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func normalizeAssignedReportType(reportType string) string {
 	switch strings.ToLower(strings.TrimSpace(reportType)) {
 	case "high", "super", "supersensitive", "超敏", "超敏报告":
