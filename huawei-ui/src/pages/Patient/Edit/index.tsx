@@ -341,15 +341,14 @@ const Edit: React.FC = () => {
         });
 
         const result = await response.json();
-        if (result.code !== 200) {
-          message.error(`文件上传失败: ${result.message}`);
-          throw new Error(result.message || '文件上传失败');
+        if (!response.ok || result.code !== 200) {
+          throw new Error(result?.data?.error || result.message || '文件上传失败');
         }
       }
       message.success('文件上传成功');
       setFileList([]);
-    } catch (error) {
-      message.error(`文件上传失败: ${error}`);
+    } catch (error: any) {
+      message.error(`文件上传失败: ${error?.message || '未知错误'}`);
       throw error;
     }
   };

@@ -4,7 +4,7 @@
 [![Release](https://img.shields.io/github/v/release/CIITRS/SmartInspectPlatform)](https://github.com/CIITRS/SmartInspectPlatform/releases)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
-患者、样本、检测结果和报告的一体化管理平台。当前版本为 **v0.1.2**，包含管理后台、Go API 服务和微信小程序。
+患者、样本、检测结果和报告的一体化管理平台。当前版本为 **v0.1.3**，包含管理后台、Go API 服务和微信小程序。
 
 > 本系统用于医疗检测业务流程管理，不能替代医生诊断或治疗建议。部署和使用时应遵守所在地的医疗、隐私与数据安全法规。
 
@@ -122,6 +122,7 @@ npm run build
 - 上传凭证有效期
 
 保存后页面会调用服务端管理接口读取对象总数、已用字节数、目录前缀和文件列表。SecretKey 只用于服务端签名；客户端仅取得短期上传凭证。
+表单上传地址应使用空间所属区域的上传域名；如果七牛返回了正确区域，服务端会自动重试并保存新的上传地址。
 
 主要接口：
 
@@ -163,7 +164,7 @@ POST /api/system/version/upgrade
 
 ```bash
 cd /path/to/application
-bash scripts/upgrade.sh v0.1.2 --check
+bash scripts/upgrade.sh v0.1.3 --check
 ```
 
 自动升级会改动运行文件并重启服务。生产使用前应配置数据库与文件备份、维护窗口、服务账户权限和回滚预案。

@@ -1,10 +1,13 @@
 package handlers
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha1"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -77,6 +80,24 @@ func TestGenerateQiniuManagementToken(t *testing.T) {
 	}
 }
 
+func TestQiniuRegionUploadURL(t *testing.T) {
+	got, ok := qiniuRegionUploadURL([]byte(
+		`{"error":"incorrect region, please use up-z1.qiniup.com, bucket is: example"}`,
+	))
+	if !ok || got != "https://up-z1.qiniup.com" {
+		t.Fatalf("qiniuRegionUploadURL() = %q, %v", got, ok)
+	}
+	for _, body := range []string{
+		`{"error":"incorrect region"}`,
+		`{"error":"please use attacker.example.com"}`,
+		`{"error":"please use up-z1.qiniup.com.attacker.example"}`,
+	} {
+		if endpoint, ok := qiniuRegionUploadURL([]byte(body)); ok {
+			t.Fatalf("unexpected endpoint %q from %q", endpoint, body)
+		}
+	}
+}
+
 func TestQiniuListIntegration(t *testing.T) {
 	if os.Getenv("QINIU_INTEGRATION") != "1" {
 		t.Skip("set QINIU_INTEGRATION=1 to verify configured bucket access")
@@ -86,6 +107,9 @@ func TestQiniuListIntegration(t *testing.T) {
 	if !config.configured() {
 		t.Fatal("Qiniu integration configuration is incomplete")
 	}
+	if os.Getenv("QINIU_FORCE_REGION_DISCOVERY") == "1" {
+		config.UploadURL = "https://upload.qiniup.com"
+	}
 	if _, err := listQiniuObjectsPage(config, "", "/", "", 1); err != nil {
 		t.Fatalf("list configured Qiniu bucket: %v", err)
 	}
@@ -94,6 +118,54 @@ func TestQiniuListIntegration(t *testing.T) {
 		t.Fatalf("read configured Qiniu bucket usage: %v", err)
 	}
 	t.Logf("Qiniu usage verified: files=%d bytes=%d truncated=%v", totalFiles, totalBytes, truncated)
+}
+
+func TestQiniuUploadIntegration(t *testing.T) {
+	if os.Getenv("QINIU_UPLOAD_INTEGRATION") != "1" {
+		t.Skip("set QINIU_UPLOAD_INTEGRATION=1 to verify upload and cleanup")
+	}
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=True&loc=Local",
+		os.Getenv("DB_USER"),
+		os.Getenv("DB_PASSWORD"),
+		os.Getenv("DB_HOST"),
+		os.Getenv("DB_PORT"),
+		os.Getenv("DB_NAME"),
+	)
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	defer db.Close()
+	if err := db.Ping(); err != nil {
+		t.Fatalf("db.Ping() error = %v", err)
+	}
+	previousDB := DB
+	SetDB(db)
+	defer SetDB(previousDB)
+
+	config := loadQiniuStorageConfig()
+	if !config.configured() {
+		t.Fatal("Qiniu integration configuration is incomplete")
+	}
+	objectName := "uploads/diagnostics/upload-smoke-" + time.Now().UTC().Format("20060102T150405.000000000Z") + ".txt"
+	defer func() {
+		if err := deleteFileFromQiniu(objectName, config); err != nil {
+			t.Errorf("delete diagnostic object: %v", err)
+		}
+	}()
+	fileURL, err := uploadFileToQiniu(
+		bytes.NewReader([]byte("SmartInspectPlatform Qiniu upload smoke test\n")),
+		objectName,
+		"upload-smoke.txt",
+		"text/plain",
+		config,
+	)
+	if err != nil {
+		t.Fatalf("upload diagnostic object: %v", err)
+	}
+	if fileURL != qiniuObjectURL(config.Domain, objectName) {
+		t.Fatalf("file URL = %q", fileURL)
+	}
 }
 
 func TestCalculateReportTrendUsesOnePointTolerance(t *testing.T) {

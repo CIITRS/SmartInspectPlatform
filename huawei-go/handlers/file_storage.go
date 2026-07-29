@@ -60,8 +60,8 @@ type QiniuObjectItem struct {
 }
 
 type qiniuListResponse struct {
-	Marker         string             `json:"marker"`
-	CommonPrefixes []string           `json:"commonPrefixes"`
+	Marker         string            `json:"marker"`
+	CommonPrefixes []string          `json:"commonPrefixes"`
 	Items          []QiniuObjectItem `json:"items"`
 }
 
@@ -72,6 +72,7 @@ var fileStorageConfig FileStorageConfig
 var minioClient *minio.Client
 
 var patientReportSequencePattern = regexp.MustCompile(`(?i)_report(\d+)\.[^.]+$`)
+var qiniuRegionHostPattern = regexp.MustCompile(`(?i)\bplease\s+use\s+([a-z0-9.-]+\.qiniup\.com)([,\s"]|$)`)
 
 func storageSettingValue(db *sql.DB, key string) string {
 	if db == nil {
@@ -169,10 +170,35 @@ func qiniuObjectURL(domain, objectName string) string {
 	return strings.TrimRight(domain, "/") + "/" + strings.Join(parts, "/")
 }
 
-func uploadFileToQiniu(file io.Reader, objectName, fileName, contentType string, config QiniuStorageConfig) (string, error) {
+func qiniuRegionUploadURL(responseBody []byte) (string, bool) {
+	matches := qiniuRegionHostPattern.FindSubmatch(responseBody)
+	if len(matches) < 2 {
+		return "", false
+	}
+	host := strings.ToLower(strings.TrimSpace(string(matches[1])))
+	if host == "" || strings.Contains(host, "..") || !strings.HasSuffix(host, ".qiniup.com") {
+		return "", false
+	}
+	return "https://" + host, true
+}
+
+func rememberQiniuUploadURL(uploadURL string) {
+	if DB == nil || strings.TrimSpace(uploadURL) == "" {
+		return
+	}
+	if _, err := DB.Exec(`INSERT INTO setting_system
+		(key_name, key_value, key_type, is_encrypted, description, created_at, updated_at)
+		VALUES ('QINIU_UPLOAD_URL', ?, 'text', 0, '七牛云表单上传地址', NOW(), NOW())
+		ON DUPLICATE KEY UPDATE key_value = VALUES(key_value), is_encrypted = 0, updated_at = NOW()`,
+		uploadURL); err != nil {
+		log.Printf("保存七牛云区域上传地址失败: %v", err)
+	}
+}
+
+func uploadFileToQiniuOnce(file io.Reader, objectName, fileName, contentType string, config QiniuStorageConfig) ([]byte, int, error) {
 	token, _, err := generateQiniuUploadToken(config, objectName, time.Now())
 	if err != nil {
-		return "", err
+		return nil, 0, err
 	}
 	reader, writer := io.Pipe()
 	form := multipart.NewWriter(writer)
@@ -207,7 +233,7 @@ func uploadFileToQiniu(file io.Reader, objectName, fileName, contentType string,
 
 	request, err := http.NewRequest(http.MethodPost, config.UploadURL, reader)
 	if err != nil {
-		return "", err
+		return nil, 0, err
 	}
 	request.Header.Set("Content-Type", form.FormDataContentType())
 	if contentType != "" {
@@ -215,17 +241,56 @@ func uploadFileToQiniu(file io.Reader, objectName, fileName, contentType string,
 	}
 	response, err := (&http.Client{Timeout: 5 * time.Minute}).Do(request)
 	if err != nil {
-		return "", err
+		return nil, 0, err
 	}
 	defer response.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err := <-writeErr; err != nil {
+		return body, response.StatusCode, err
+	}
+	return body, response.StatusCode, nil
+}
+
+func uploadFileToQiniu(file io.Reader, objectName, fileName, contentType string, config QiniuStorageConfig) (string, error) {
+	var replayable io.Seeker
+	var initialOffset int64
+	if seeker, ok := file.(io.Seeker); ok {
+		if offset, err := seeker.Seek(0, io.SeekCurrent); err == nil {
+			replayable = seeker
+			initialOffset = offset
+		}
+	}
+
+	body, statusCode, err := uploadFileToQiniuOnce(file, objectName, fileName, contentType, config)
+	if err != nil {
 		return "", err
 	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return "", fmt.Errorf("七牛云上传失败（HTTP %d）：%s", response.StatusCode, strings.TrimSpace(string(body)))
+	if statusCode >= 200 && statusCode < 300 {
+		return qiniuObjectURL(config.Domain, objectName), nil
 	}
-	return qiniuObjectURL(config.Domain, objectName), nil
+
+	regionURL, regionMismatch := qiniuRegionUploadURL(body)
+	if regionMismatch && regionURL != strings.TrimRight(config.UploadURL, "/") {
+		if replayable == nil {
+			rememberQiniuUploadURL(regionURL)
+			return "", fmt.Errorf("七牛云上传区域不匹配，已自动修正上传地址为 %s，请重试", regionURL)
+		}
+		if _, err := replayable.Seek(initialOffset, io.SeekStart); err != nil {
+			return "", fmt.Errorf("七牛云上传区域不匹配且文件无法重试: %w", err)
+		}
+		retryConfig := config
+		retryConfig.UploadURL = regionURL
+		retryBody, retryStatus, retryErr := uploadFileToQiniuOnce(file, objectName, fileName, contentType, retryConfig)
+		if retryErr != nil {
+			return "", retryErr
+		}
+		if retryStatus >= 200 && retryStatus < 300 {
+			rememberQiniuUploadURL(regionURL)
+			return qiniuObjectURL(config.Domain, objectName), nil
+		}
+		return "", fmt.Errorf("七牛云上传失败（HTTP %d）：%s", retryStatus, strings.TrimSpace(string(retryBody)))
+	}
+	return "", fmt.Errorf("七牛云上传失败（HTTP %d）：%s", statusCode, strings.TrimSpace(string(body)))
 }
 
 func qiniuObjectNameFromURL(config QiniuStorageConfig, fileURL string) (string, bool) {
@@ -774,6 +839,7 @@ func HandleUploadFileToR2(c *app.RequestContext, db *sql.DB) {
 	}
 	fileURL, err := uploadFileToR2(file, objectName, contentType)
 	if err != nil {
+		log.Printf("患者报告上传失败 patient=%s object=%s: %v", patientCode, objectName, err)
 		c.JSON(consts.StatusInternalServerError, ApiResponse{
 			Code:    500,
 			Success: false,
