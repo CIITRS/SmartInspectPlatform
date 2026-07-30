@@ -64,7 +64,7 @@ github_curl() {
   if [[ -n "${GITHUB_TOKEN:-}" ]]; then
     headers+=(--header "Authorization: Bearer $GITHUB_TOKEN")
   fi
-  curl --fail --location --retry 3 --connect-timeout 15 \
+  curl --http1.1 --fail --location --retry 3 --retry-all-errors --connect-timeout 15 \
     --silent --show-error "${headers[@]}" "$@"
 }
 
