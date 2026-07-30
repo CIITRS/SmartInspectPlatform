@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { Card, Descriptions, Button, Spin, message, Tag, Steps, Table, Collapse, Row, Col, Empty, Modal, Form, Input, Select, DatePicker, Space } from 'antd';
+import { Card, Descriptions, Button, Spin, message, Tag, Steps, Table, Collapse, Row, Col, Empty, Modal, Form, Input, Select, DatePicker, Space, Timeline, Alert } from 'antd';
 import { CheckCircleOutlined, ClockCircleOutlined, FileTextOutlined, ExperimentOutlined } from '@ant-design/icons';
 import { useParams, useNavigate } from '@umijs/max';
-import { getSamples, listModels, listCancerTypes, listGenes, updateSampleGeneData, getSampleExpress, saveSampleExpress, updateSampleExpress } from '@/services/api';
+import { getSamples, listModels, listCancerTypes, listGenes, updateSampleGeneData, getSampleExpress, saveSampleExpress, updateSampleExpress, refreshSampleExpress } from '@/services/api';
 import EChartsHeatmap from '@/components/EChartsHeatmap';
 import dayjs from 'dayjs';
 
@@ -15,7 +15,8 @@ const Detail: React.FC = () => {
   const [_genes, setGenes] = useState<any[]>([]);
   const [applicableModels, setApplicableModels] = useState<any[]>([]);
   const [expressModalVisible, setExpressModalVisible] = useState(false);
-  const [expressData, setExpressData] = useState<any>(null);
+  const [expressData, setExpressData] = useState<Record<'inbound' | 'outbound', any>>({ inbound: null, outbound: null });
+  const [expressDirection, setExpressDirection] = useState<'inbound' | 'outbound'>('inbound');
   const [expressLoading, setExpressLoading] = useState(false);
   const [expressForm] = Form.useForm();
   const navigate = useNavigate();
@@ -30,27 +31,33 @@ const Detail: React.FC = () => {
   const fetchExpressData = async () => {
     if (!id) return;
     try {
-      const response = await getSampleExpress(id);
-      if (response.data) {
-        setExpressData(response.data);
-      }
+      const [inbound, outbound] = await Promise.all([
+        getSampleExpress(id, 'inbound'),
+        getSampleExpress(id, 'outbound'),
+      ]);
+      setExpressData({ inbound: inbound.data || null, outbound: outbound.data || null });
     } catch (error) {
       console.error('获取快递运单失败:', error);
     }
   };
 
-  const handleOpenExpressModal = () => {
-    if (expressData) {
+  const handleOpenExpressModal = (direction: 'inbound' | 'outbound') => {
+    setExpressDirection(direction);
+    const current = expressData[direction];
+    if (current) {
       expressForm.setFieldsValue({
-        trackingNumber: expressData.trackingNumber,
-        expressCompany: expressData.expressCompany,
-        sendTime: expressData.sendTime ? dayjs(expressData.sendTime) : null,
-        receiveTime: expressData.receiveTime ? dayjs(expressData.receiveTime) : null,
-        status: expressData.status,
-        notes: expressData.notes,
+        trackingNumber: current.tracking_number,
+        expressType: current.express_type || 'auto',
+        expressCompany: current.express_company,
+        queryMobile: current.query_mobile,
+        sendTime: current.send_time ? dayjs(current.send_time) : null,
+        receiveTime: current.receive_time ? dayjs(current.receive_time) : null,
+        status: current.status,
+        notes: current.notes,
       });
     } else {
       expressForm.resetFields();
+      expressForm.setFieldsValue({ expressType: 'auto', status: 'in_transit' });
     }
     setExpressModalVisible(true);
   };
@@ -62,15 +69,19 @@ const Detail: React.FC = () => {
       
       const expressInfo = {
         trackingNumber: values.trackingNumber,
+        direction: expressDirection,
+        expressType: values.expressType || 'auto',
         expressCompany: values.expressCompany,
+        queryMobile: values.queryMobile,
         sendTime: values.sendTime ? values.sendTime.format('YYYY-MM-DD HH:mm:ss') : null,
         receiveTime: values.receiveTime ? values.receiveTime.format('YYYY-MM-DD HH:mm:ss') : null,
         status: values.status,
         notes: values.notes,
       };
       
-      if (expressData) {
-        await updateSampleExpress(id!, expressInfo);
+      const current = expressData[expressDirection];
+      if (current) {
+        await updateSampleExpress(String(current.id), expressInfo);
         message.success('快递运单已更新');
       } else {
         await saveSampleExpress(id!, expressInfo);
@@ -84,6 +95,21 @@ const Detail: React.FC = () => {
         return;
       }
       message.error(error.message || '保存快递运单失败');
+    } finally {
+      setExpressLoading(false);
+    }
+  };
+
+  const handleRefreshExpress = async (direction: 'inbound' | 'outbound') => {
+    const current = expressData[direction];
+    if (!current?.id) return;
+    setExpressLoading(true);
+    try {
+      const response = await refreshSampleExpress(current.id);
+      message.success(response.message || '物流状态已更新');
+      await fetchExpressData();
+    } catch (error: any) {
+      message.error(error.message || '物流查询失败');
     } finally {
       setExpressLoading(false);
     }
@@ -150,6 +176,74 @@ const Detail: React.FC = () => {
       </div>
     );
   }
+
+  const renderExpressPanel = (direction: 'inbound' | 'outbound') => {
+    const current = expressData[direction];
+    const directionName = direction === 'inbound' ? '患者寄出 → 实验室' : '公司发货 → 患者';
+    const statusMap: Record<string, { color: string; text: string }> = {
+      pending: { color: 'orange', text: '待揽件' },
+      picked_up: { color: 'blue', text: '已揽件' },
+      sent: { color: 'blue', text: '已发货' },
+      in_transit: { color: 'cyan', text: '运输中' },
+      delivered: { color: 'green', text: '已签收' },
+      exception: { color: 'red', text: '物流异常' },
+      returned: { color: 'red', text: '已退回' },
+    };
+    return (
+      <Card
+        type="inner"
+        title={directionName}
+        extra={(
+          <Space>
+            {current?.id && current.status !== 'delivered' && (
+              <Button loading={expressLoading} onClick={() => handleRefreshExpress(direction)}>查询物流</Button>
+            )}
+            <Button type="primary" onClick={() => handleOpenExpressModal(direction)}>
+              {current ? '更换当前运单' : '录入运单'}
+            </Button>
+          </Space>
+        )}
+      >
+        {!current ? (
+          <Empty description="暂无当前运单" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+        ) : (
+          <>
+            {current.last_query_error && (
+              <Alert type="warning" showIcon message={current.last_query_error} style={{ marginBottom: 16 }} />
+            )}
+            <Descriptions column={2} bordered size="small">
+              <Descriptions.Item label="快递单号">{current.tracking_number || '-'}</Descriptions.Item>
+              <Descriptions.Item label="快递公司">{current.express_company || current.express_type || '自动识别'}</Descriptions.Item>
+              <Descriptions.Item label="状态">
+                <Tag color={(statusMap[current.status] || {}).color || 'default'}>
+                  {(statusMap[current.status] || {}).text || current.status || '-'}
+                </Tag>
+              </Descriptions.Item>
+              <Descriptions.Item label="签收时间">{current.delivered_at || '-'}</Descriptions.Item>
+              <Descriptions.Item label="最新动态" span={2}>{current.latest_event_status || '-'}</Descriptions.Item>
+              <Descriptions.Item label="最后查询">{current.last_query_at || '-'}</Descriptions.Item>
+              <Descriptions.Item label="备注">{current.notes || '-'}</Descriptions.Item>
+            </Descriptions>
+            {current.status === 'delivered' ? (
+              <Alert
+                type="success"
+                showIcon
+                message="运单已签收，中间物流路径已清除，仅保留签收状态与时间。"
+                style={{ marginTop: 16 }}
+              />
+            ) : Array.isArray(current.route) && current.route.length > 0 ? (
+              <Timeline
+                style={{ marginTop: 20 }}
+                items={current.route.map((event: any) => ({
+                  children: <><div>{event.status}</div><div style={{ color: '#8c8c8c' }}>{event.time}</div></>,
+                }))}
+              />
+            ) : null}
+          </>
+        )}
+      </Card>
+    );
+  };
 
   return (
     <div style={{ maxWidth: 1400, margin: '0 auto', padding: '0 24px' }}>
@@ -323,61 +417,11 @@ const Detail: React.FC = () => {
       </Card>
 
       {/* 快递运单信息 */}
-      <Card 
-        title="快递运单信息" 
-        style={{ marginTop: 16 }}
-        extra={
-          <Button type="primary" onClick={handleOpenExpressModal}>
-            {expressData ? '编辑快递运单' : '录入快递运单'}
-          </Button>
-        }
-      >
-        {expressData ? (
-          <Descriptions column={2} bordered>
-            <Descriptions.Item label="快递单号">{expressData.trackingNumber || '-'}</Descriptions.Item>
-            <Descriptions.Item label="快递公司">{expressData.expressCompany || '-'}</Descriptions.Item>
-            <Descriptions.Item label="寄件时间">
-              {expressData.sendTime ? (() => {
-                const d = new Date(expressData.sendTime);
-                const year = d.getFullYear();
-                const month = String(d.getMonth() + 1).padStart(2, '0');
-                const day = String(d.getDate()).padStart(2, '0');
-                const hours = String(d.getHours()).padStart(2, '0');
-                const minutes = String(d.getMinutes()).padStart(2, '0');
-                return `${year}/${month}/${day} ${hours}:${minutes}`;
-              })() : '-'}
-            </Descriptions.Item>
-            <Descriptions.Item label="收件时间">
-              {expressData.receiveTime ? (() => {
-                const d = new Date(expressData.receiveTime);
-                const year = d.getFullYear();
-                const month = String(d.getMonth() + 1).padStart(2, '0');
-                const day = String(d.getDate()).padStart(2, '0');
-                const hours = String(d.getHours()).padStart(2, '0');
-                const minutes = String(d.getMinutes()).padStart(2, '0');
-                return `${year}/${month}/${day} ${hours}:${minutes}`;
-              })() : '-'}
-            </Descriptions.Item>
-            <Descriptions.Item label="状态">
-              {(() => {
-                const statusMap: Record<string, { color: string; text: string }> = {
-                  'pending': { color: 'orange', text: '待发货' },
-                  'sent': { color: 'blue', text: '已发货' },
-                  'in_transit': { color: 'cyan', text: '运输中' },
-                  'delivered': { color: 'green', text: '已签收' },
-                  'returned': { color: 'red', text: '已退回' }
-                };
-                const status = statusMap[expressData.status];
-                return status ? <Tag color={status.color}>{status.text}</Tag> : expressData.status || '-';
-              })()}
-            </Descriptions.Item>
-            <Descriptions.Item label="备注" span={2}>{expressData.notes || '-'}</Descriptions.Item>
-          </Descriptions>
-        ) : (
-          <Empty description="暂无快递运单信息" image={Empty.PRESENTED_IMAGE_SIMPLE}>
-            <Button type="primary" onClick={handleOpenExpressModal}>录入快递运单</Button>
-          </Empty>
-        )}
+      <Card title="快递全周期管理" style={{ marginTop: 16 }}>
+        <Row gutter={[16, 16]}>
+          <Col xs={24} xl={12}>{renderExpressPanel('inbound')}</Col>
+          <Col xs={24} xl={12}>{renderExpressPanel('outbound')}</Col>
+        </Row>
       </Card>
 
       {/* 检测情况展示区域 */}
@@ -520,7 +564,7 @@ const Detail: React.FC = () => {
 
       {/* 快递运单编辑弹窗 */}
       <Modal
-        title={expressData ? '编辑快递运单' : '录入快递运单'}
+        title={`${expressDirection === 'inbound' ? '患者寄出' : '公司发货'}运单`}
         open={expressModalVisible}
         onCancel={() => setExpressModalVisible(false)}
         onOk={handleSaveExpress}
@@ -542,20 +586,30 @@ const Detail: React.FC = () => {
             <Input placeholder="请输入快递单号" />
           </Form.Item>
           <Form.Item
-            name="expressCompany"
+            name="expressType"
             label="快递公司"
             rules={[{ required: true, message: '请选择快递公司' }]}
           >
             <Select placeholder="请选择快递公司">
-              <Select.Option value="顺丰速运">顺丰速运</Select.Option>
-              <Select.Option value="圆通快递">圆通快递</Select.Option>
-              <Select.Option value="中通快递">中通快递</Select.Option>
-              <Select.Option value="韵达快递">韵达快递</Select.Option>
-              <Select.Option value="申通快递">申通快递</Select.Option>
-              <Select.Option value="京东物流">京东物流</Select.Option>
-              <Select.Option value="邮政EMS">邮政EMS</Select.Option>
-              <Select.Option value="其他">其他</Select.Option>
+              <Select.Option value="auto">自动识别</Select.Option>
+              <Select.Option value="sfexpress">顺丰速运</Select.Option>
+              <Select.Option value="yuantong">圆通快递</Select.Option>
+              <Select.Option value="zhongtong">中通快递</Select.Option>
+              <Select.Option value="yunda">韵达快递</Select.Option>
+              <Select.Option value="shentong">申通快递</Select.Option>
+              <Select.Option value="jd">京东物流</Select.Option>
+              <Select.Option value="ems">邮政 EMS</Select.Option>
             </Select>
+          </Form.Item>
+          <Form.Item name="expressCompany" label="快递公司显示名称">
+            <Input placeholder="自动识别时可留空" />
+          </Form.Item>
+          <Form.Item
+            name="queryMobile"
+            label="收/寄件手机号"
+            tooltip="顺丰查询必须填写收件人或寄件人手机号。"
+          >
+            <Input maxLength={20} placeholder="顺丰必填，其他快递选填" />
           </Form.Item>
           <Space style={{ width: '100%' }} size="middle">
             <Form.Item

@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Table, Button, Input, Form, Row, Col, Modal, Tag, Select, App, Steps, Collapse, Upload, Typography, Space, Descriptions, Empty, Radio, Spin, DatePicker } from 'antd';
 import { EditOutlined, DeleteOutlined, PlusOutlined, CheckCircleOutlined, ClockCircleOutlined, UploadOutlined, DownloadOutlined, InboxOutlined } from '@ant-design/icons';
 import { useNavigate } from '@umijs/max';
-import { getSamples, updateSample, deleteSample, getSampleTypes, getTreatmentStages, listCancerTypes } from '@/services/api';
+import { getSamples, updateSample, deleteSample, getSampleTypes, getTreatmentStages, listCancerTypes, getSampleExpress } from '@/services/api';
 import * as XLSX from 'xlsx';
 import dayjs from 'dayjs';
 
@@ -24,6 +24,7 @@ const SampleList: React.FC = () => {
   const [detailLoading, setDetailLoading] = useState(false);
   const [editVisible, setEditVisible] = useState(false);
   const [selectedSample, setSelectedSample] = useState<any>(null);
+  const [sampleExpress, setSampleExpress] = useState<Record<'inbound' | 'outbound', any>>({ inbound: null, outbound: null });
   const [_editSample, setEditSample] = useState<any>(null);
   const [editForm] = Form.useForm();
   const editOrganizationType = Form.useWatch('organization_type', editForm) || '个人送检';
@@ -99,14 +100,20 @@ const SampleList: React.FC = () => {
 
   const handleView = async (record: any) => {
     setSelectedSample(record);
+    setSampleExpress({ inbound: null, outbound: null });
     setDetailVisible(true);
     setDetailLoading(true);
     try {
-      const response = await getSamples({ id: record.id });
+      const [response, inbound, outbound] = await Promise.all([
+        getSamples({ id: record.id }),
+        getSampleExpress(String(record.id), 'inbound'),
+        getSampleExpress(String(record.id), 'outbound'),
+      ]);
       const detail = response.data?.list?.[0];
       if (detail) {
         setSelectedSample(detail);
       }
+      setSampleExpress({ inbound: inbound.data || null, outbound: outbound.data || null });
     } catch (_error) {
       appMessage.warning('样本详情加载失败，已显示列表信息');
     } finally {
@@ -462,38 +469,44 @@ const SampleList: React.FC = () => {
             </div>
 
             {/* 快递运单信息 */}
-            {(selectedSample.express_no || selectedSample.express_code) && (
-              <div style={{ marginTop: 16, marginBottom: 16, padding: 16, background: '#f5f5f5', borderRadius: 8 }}>
-                <h4 style={{ marginBottom: 12, fontWeight: 600 }}>快递运单信息</h4>
-                <Descriptions column={2} size="small" bordered>
-                  <Descriptions.Item label="快递单号">
-                    {selectedSample.express_no || selectedSample.express_code || '-'}
-                  </Descriptions.Item>
-                  <Descriptions.Item label="快递状态">
-                    {(() => {
-                      const expressStatusMap: Record<string, { color: string; text: string }> = {
-                        'pending': { color: 'default', text: '待发货' },
-                        'shipped': { color: 'blue', text: '运输中' },
-                        'delivered': { color: 'green', text: '已送达' },
-                        'signed': { color: 'green', text: '已签收' },
-                      };
-                      const status = expressStatusMap[selectedSample.express_status] || { color: 'default', text: selectedSample.express_status || '未知' };
-                      return <Tag color={status.color}>{status.text}</Tag>;
-                    })()}
-                  </Descriptions.Item>
-                  {selectedSample.express_company && (
-                    <Descriptions.Item label="快递公司">
-                      {selectedSample.express_company}
+            <div style={{ marginTop: 16, marginBottom: 16, padding: 16, background: '#f5f5f5', borderRadius: 8 }}>
+              <Space style={{ width: '100%', justifyContent: 'space-between', marginBottom: 12 }}>
+                <h4 style={{ margin: 0, fontWeight: 600 }}>快递全周期状态</h4>
+                <Button size="small" type="link" onClick={() => navigate(`/result/detail/${selectedSample.id}`)}>
+                  管理/查看物流轨迹
+                </Button>
+              </Space>
+              {(['inbound', 'outbound'] as const).map((direction) => {
+                const current = sampleExpress[direction];
+                const statusMap: Record<string, { color: string; text: string }> = {
+                  pending: { color: 'default', text: '待揽件' },
+                  picked_up: { color: 'blue', text: '已揽件' },
+                  in_transit: { color: 'cyan', text: '运输中' },
+                  delivered: { color: 'green', text: '已签收' },
+                  exception: { color: 'red', text: '物流异常' },
+                };
+                return (
+                  <Descriptions key={direction} column={2} size="small" bordered style={{ marginBottom: 12 }}>
+                    <Descriptions.Item label={direction === 'inbound' ? '患者寄出' : '公司发货'}>
+                      {current?.tracking_number || '暂无运单'}
                     </Descriptions.Item>
-                  )}
-                  {selectedSample.express_date && (
-                    <Descriptions.Item label="发货时间">
-                      {new Date(selectedSample.express_date).toLocaleString()}
+                    <Descriptions.Item label="状态">
+                      {current ? (
+                        <Tag color={(statusMap[current.status] || {}).color || 'default'}>
+                          {(statusMap[current.status] || {}).text || current.status}
+                        </Tag>
+                      ) : '-'}
                     </Descriptions.Item>
-                  )}
-                </Descriptions>
-              </div>
-            )}
+                    {current && (
+                      <>
+                        <Descriptions.Item label="最新动态">{current.latest_event_status || '-'}</Descriptions.Item>
+                        <Descriptions.Item label="签收时间">{current.delivered_at || '-'}</Descriptions.Item>
+                      </>
+                    )}
+                  </Descriptions>
+                );
+              })}
+            </div>
             
             {/* 横向状态时间线 */}
             <div style={{ marginTop: 24, marginBottom: 16 }}>

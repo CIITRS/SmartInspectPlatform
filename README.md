@@ -4,7 +4,7 @@
 [![Release](https://img.shields.io/github/v/release/CIITRS/SmartInspectPlatform)](https://github.com/CIITRS/SmartInspectPlatform/releases)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
-患者、样本、检测结果和报告的一体化管理平台。当前版本为 **v0.2.0**，包含管理后台、Go API 服务和微信小程序。
+患者、样本、检测结果和报告的一体化管理平台。当前版本为 **v0.2.1**，包含管理后台、Go API 服务和微信小程序。
 
 > 本系统用于医疗检测业务流程管理，不能替代医生诊断或治疗建议。部署和使用时应遵守所在地的医疗、隐私与数据安全法规。
 
@@ -78,6 +78,8 @@ go run .
 | `PORT` | API 监听端口，默认 `3001` |
 | `REDIS_ADDR`、`REDIS_PASSWORD` | Redis 连接 |
 | `AI_API_KEY`、`AI_API_URL`、`AI_MODEL` | 仅用于首次启动迁移 AI 配置到数据库；之后由系统设置管理 |
+| `EXPRESS_API_URL`、`EXPRESS_APP_KEY`、`EXPRESS_APP_SECRET` | 仅用于首次启动迁移快递查询配置；之后由系统设置管理 |
+| `EXPRESS_QUERY_ENABLED`、`EXPRESS_POLL_INTERVAL_MINUTES` | 快递查询开关及未签收运单自动刷新间隔 |
 | `QINIU_*` | 七牛配置的环境变量初始值 |
 | `GITHUB_REPOSITORY` | 版本来源，默认 `CIITRS/SmartInspectPlatform` |
 | `GITHUB_TOKEN` | 可选；提高 GitHub API 限额，私有仓库时必需 |
@@ -165,7 +167,7 @@ POST /api/system/version/upgrade
 
 ```bash
 cd /path/to/application
-bash scripts/upgrade.sh v0.2.0 --check
+bash scripts/upgrade.sh v0.2.1 --check
 ```
 
 自动升级会改动运行文件并重启服务。生产使用前应配置数据库与文件备份、维护窗口、服务账户权限和回滚预案。
