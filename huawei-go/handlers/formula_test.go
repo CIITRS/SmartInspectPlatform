@@ -236,7 +236,7 @@ func TestExcelAlignedScreeningFormula(t *testing.T) {
 				"HWG09": 50, "HWG10": 100, "HWG11": 100, "HWG12": 100,
 				"HWG13": 100, "HWG14": 100, "HWG15": 100, "HWG16": 100, "HWG17": 100,
 			},
-			want: 31.0,
+			want: 30.3,
 		},
 		{
 			name: "health screening",

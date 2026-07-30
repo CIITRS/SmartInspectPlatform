@@ -18,6 +18,19 @@
       </view>
       <view class="form-card">
       <view class="form-item">
+        <text class="label">检测方式</text>
+        <view class="segmented">
+          <view class="seg-item" :class="{ active: form.service_mode === 'single' }" @click="form.service_mode = 'single'; form.sale_package_id = 0">单次检测</view>
+          <view class="seg-item" :class="{ active: form.service_mode === 'package' }" @click="form.service_mode = 'package'">套餐联检</view>
+        </view>
+      </view>
+      <view v-if="form.service_mode === 'package'" class="form-item">
+        <text class="label">检测套餐</text>
+        <picker :range="packages" range-key="display_name" @change="onPackageChange">
+          <view class="picker" :class="{ placeholder: !form.sale_package_id }">{{ selectedOptionName(packages, form.sale_package_id, '请选择套餐') }}</view>
+        </picker>
+      </view>
+      <view class="form-item">
         <text class="label">检测癌种</text>
         <picker :range="cancerTypes" range-key="name" @change="onCancerTypeChange">
           <view class="picker" :class="{ placeholder: !form.cancer_type_id }">{{ selectedOptionName(cancerTypes, form.cancer_type_id, '请选择检测癌种') }}</view>
@@ -61,6 +74,35 @@
         <text class="label">备注</text>
         <input v-model="form.notes" class="input" placeholder="选填" />
       </view>
+      <view class="form-item">
+        <text class="label">回寄快递（绑定样本后可登记）</text>
+        <view class="inline-row">
+          <input v-model="form.return_express_company" class="input express-company" placeholder="快递公司" />
+          <input v-model="form.return_tracking_number" class="input" placeholder="回寄快递单号（选填）" />
+        </view>
+      </view>
+      </view>
+
+      <view class="consent-card">
+        <view class="consent-title">知情同意书</view>
+        <view v-if="consentSigned" class="consent-signed">该患者已于 {{ consentSignedAt || '此前' }} 签署，无需重复填写。</view>
+        <template v-else>
+          <scroll-view scroll-y class="consent-text"><text>{{ consentText }}</text></scroll-view>
+          <input v-model="form.consent_signed_name" class="input" placeholder="请输入签署人姓名" />
+          <view class="signature-head">
+            <text>请在下方手写签名</text>
+            <text class="clear-sign" @click="clearSignature">清空</text>
+          </view>
+          <canvas canvas-id="signatureCanvas" id="signatureCanvas" class="signature-canvas"
+            disable-scroll
+            @touchstart="signatureStart"
+            @touchmove="signatureMove"
+            @touchend="signatureEnd"></canvas>
+          <view class="agree-row" @click="consentAgreed = !consentAgreed">
+            <text class="check">{{ consentAgreed ? '☑' : '☐' }}</text>
+            <text>本人已阅读并同意以上内容，确认签名真实有效</text>
+          </view>
+        </template>
       </view>
     </view>
 
@@ -81,6 +123,14 @@ export default {
       sampleTypes: [],
       cancerTypes: [],
       treatmentStages: [],
+      packages: [],
+      consentSigned: false,
+      consentSignedAt: '',
+      consentText: '',
+      consentAgreed: false,
+      signatureHasInk: false,
+      signatureDrawing: false,
+      signatureLastPoint: null,
       reportTypes: [
         { value: 'normal', label: '高敏（MePlex高敏98CpG）' },
         { value: 'high', label: '超敏（MePlex超敏180CpG）' }
@@ -95,7 +145,12 @@ export default {
         start_sequence: '',
         manual_suffix: '',
         organization: '个人送检',
-        notes: ''
+        notes: '',
+        service_mode: 'single',
+        sale_package_id: 0,
+        consent_signed_name: '',
+        return_express_company: '',
+        return_tracking_number: ''
       },
       samplePrefix: '',
       historicalSample: null,
@@ -130,6 +185,13 @@ export default {
         this.sampleTypes = this.toList(data.sample_types)
         this.cancerTypes = this.toList(data.cancer_types)
         this.treatmentStages = this.toList(data.treatment_stages)
+        this.packages = this.toList(data.packages).map(item => ({
+          ...item,
+          display_name: `${item.name}（${item.detection_count || 1}次）`
+        }))
+        this.consentSigned = Boolean(data.consent_signed)
+        this.consentSignedAt = data.consent_signed_at || ''
+        this.consentText = data.consent_text || ''
         this.samplePrefix = data.sample_prefix || ''
         this.historicalSample = data.historical_sample || null
         if (!this.suffixValue && Number(data.next_sequence) > 0) {
@@ -159,6 +221,65 @@ export default {
     onTreatmentStageChange(e) {
       const selected = this.treatmentStages[Number(e.detail.value)]
       this.form.treatment_stage_id = selected ? Number(selected.id) : 0
+    },
+    onPackageChange(e) {
+      const selected = this.packages[Number(e.detail.value)]
+      this.form.sale_package_id = selected ? Number(selected.id) : 0
+    },
+    signatureStart(e) {
+      const point = e.touches && e.touches[0]
+      if (!point) return
+      this.signatureDrawing = true
+      this.signatureLastPoint = { x: point.x, y: point.y }
+    },
+    signatureMove(e) {
+      if (!this.signatureDrawing || !this.signatureLastPoint) return
+      const point = e.touches && e.touches[0]
+      if (!point) return
+      const context = uni.createCanvasContext('signatureCanvas', this)
+      context.setStrokeStyle('#111827')
+      context.setLineWidth(3)
+      context.setLineCap('round')
+      context.beginPath()
+      context.moveTo(this.signatureLastPoint.x, this.signatureLastPoint.y)
+      context.lineTo(point.x, point.y)
+      context.stroke()
+      context.draw(true)
+      this.signatureLastPoint = { x: point.x, y: point.y }
+      this.signatureHasInk = true
+    },
+    signatureEnd() {
+      this.signatureDrawing = false
+      this.signatureLastPoint = null
+    },
+    clearSignature() {
+      const context = uni.createCanvasContext('signatureCanvas', this)
+      context.clearRect(0, 0, 1000, 500)
+      context.draw()
+      this.signatureHasInk = false
+    },
+    exportSignature() {
+      return new Promise((resolve, reject) => {
+        uni.canvasToTempFilePath({
+          canvasId: 'signatureCanvas',
+          fileType: 'png',
+          quality: 1,
+          success: (result) => {
+            try {
+              const fs = uni.getFileSystemManager()
+              fs.readFile({
+                filePath: result.tempFilePath,
+                encoding: 'base64',
+                success: (readResult) => resolve(`data:image/png;base64,${readResult.data}`),
+                fail: reject
+              })
+            } catch (error) {
+              reject(error)
+            }
+          },
+          fail: reject
+        }, this)
+      })
     },
     reuseHistoricalSample() {
       const item = this.historicalSample
@@ -200,6 +321,7 @@ export default {
       if (!this.form.cancer_type_id) { uni.showToast({ title: '请选择检测癌种', icon: 'none' }); return }
       if (!this.form.sample_type_id) { uni.showToast({ title: '请选择样本类型', icon: 'none' }); return }
       if (!this.form.report_type) { uni.showToast({ title: '请选择高敏或超敏', icon: 'none' }); return }
+      if (this.form.service_mode === 'package' && !this.form.sale_package_id) { uni.showToast({ title: '请选择检测套餐', icon: 'none' }); return }
       if (!this.form.treatment_stage_id) { uni.showToast({ title: '请选择治疗阶段', icon: 'none' }); return }
       const suffix = this.suffixValue
       if (!/^\d{4}$/.test(suffix)) {
@@ -210,10 +332,18 @@ export default {
         uni.showToast({ title: '请输入送检单位', icon: 'none' })
         return
       }
+      if (!this.consentSigned) {
+        if (!String(this.form.consent_signed_name || '').trim()) { uni.showToast({ title: '请输入签署人姓名', icon: 'none' }); return }
+        if (!this.signatureHasInk) { uni.showToast({ title: '请完成手写签名', icon: 'none' }); return }
+        if (!this.consentAgreed) { uni.showToast({ title: '请确认同意知情同意书', icon: 'none' }); return }
+      }
       this.submitting = true
       try {
+        let consentSignature = ''
+        if (!this.consentSigned) consentSignature = await this.exportSignature()
         const payload = {
           ...this.form,
+          consent_signature: consentSignature,
           patient_ids: this.patientIds,
           start_sequence: Number(this.form.start_sequence) || 0,
           manual_suffix: this.form.manual_suffix || ''
@@ -269,4 +399,14 @@ export default {
 .scan-btn { width: 160rpx; height: 72rpx; line-height: 72rpx; border-radius: 12rpx; background: #f0f5ff; color: #1677ff; font-size: 26rpx; border: 2rpx solid #1677ff; }
 .hint { display: block; margin-top: 8rpx; font-size: 22rpx; color: #8c9aa8; }
 .submit-btn { margin-top: 28rpx; width: 100%; height: 88rpx; line-height: 88rpx; border-radius: 16rpx; border: none; background: #1677ff; color: #fff; font-size: 30rpx; font-weight: 600; }
+.express-company { max-width: 220rpx; }
+.consent-card { margin-top: 22rpx; padding: 26rpx; border-radius: 20rpx; background: #fff; box-shadow: 0 2rpx 12rpx rgba(22,119,255,0.06); }
+.consent-title { font-size: 30rpx; font-weight: 700; color: #1f2d3d; margin-bottom: 16rpx; }
+.consent-signed { padding: 20rpx; border-radius: 12rpx; background: #f6ffed; color: #389e0d; font-size: 25rpx; }
+.consent-text { height: 220rpx; padding: 18rpx; margin-bottom: 18rpx; box-sizing: border-box; border-radius: 12rpx; background: #f8fafc; color: #475569; font-size: 24rpx; line-height: 1.7; }
+.signature-head { display: flex; justify-content: space-between; margin: 18rpx 0 10rpx; color: #64748b; font-size: 24rpx; }
+.clear-sign { color: #1677ff; }
+.signature-canvas { width: 100%; height: 260rpx; border: 2rpx dashed #94a3b8; border-radius: 12rpx; background: #fff; }
+.agree-row { display: flex; gap: 10rpx; align-items: flex-start; margin-top: 16rpx; color: #475569; font-size: 23rpx; line-height: 1.5; }
+.check { color: #1677ff; font-size: 30rpx; }
 </style>

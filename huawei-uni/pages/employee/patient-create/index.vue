@@ -179,8 +179,20 @@ export default {
       try {
         const res = await uniAPI.createEmployeePatient(this.form)
         if (res.success) {
-          uni.showToast({ title: '保存成功', icon: 'success' })
-          setTimeout(() => uni.navigateBack(), 900)
+          const patientId = res.data && res.data.id
+          uni.showModal({
+            title: '患者已绑定客户经理',
+            content: '是否立即为该患者新增样本？新增时可选择单检或套餐，并完成知情同意签名。',
+            confirmText: '新增样本',
+            cancelText: '稍后处理',
+            success: (modal) => {
+              if (modal.confirm && patientId) {
+                uni.redirectTo({ url: `/pages/employee/sample-allocate/index?patient_ids=${patientId}` })
+              } else {
+                uni.navigateBack()
+              }
+            }
+          })
         } else {
           uni.showToast({ title: res.message || '保存失败', icon: 'none' })
         }

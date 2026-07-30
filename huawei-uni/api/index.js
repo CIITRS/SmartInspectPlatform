@@ -390,10 +390,26 @@ export const aiAPI = {
   },
   // 报告分析
   analyzeReport: (data) => {
-    return request('/ai/analyzeReport', {
-      method: 'POST',
-      data
-    });
+    const filePath = typeof data === 'string' ? data : data.filePath
+    const sessionId = uni.getStorageSync('miniapp_session_id')
+    return new Promise((resolve, reject) => {
+      uni.uploadFile({
+        url: BASE_URL + '/ai/report-analysis',
+        filePath,
+        name: 'file',
+        header: { 'X-Miniapp-Session': sessionId || '' },
+        success: (res) => {
+          try {
+            const payload = typeof res.data === 'string' ? JSON.parse(res.data) : res.data
+            if (res.statusCode >= 200 && res.statusCode < 300 && payload.success) resolve(payload)
+            else reject(new Error(payload.message || '报告分析失败'))
+          } catch (error) {
+            reject(error)
+          }
+        },
+        fail: reject
+      })
+    })
   }
 };
 
@@ -489,6 +505,13 @@ export const uniAPI = {
       data: params
     });
   },
+  getEmployeePatientGroups: () => request('/uni/employee/patient-groups'),
+  createEmployeePatientGroup: (data) => request('/uni/employee/patient-groups', { method: 'POST', data }),
+  deleteEmployeePatientGroup: (id) => request(`/uni/employee/patient-groups/${id}`, { method: 'DELETE' }),
+  setEmployeePatientGroup: (patientId, groupId) => request(`/uni/employee/patients/${patientId}/group`, {
+    method: 'PUT',
+    data: { group_id: Number(groupId) || 0 }
+  }),
   // 获取员工端患者详情
   getEmployeePatientDetail: (id) => {
     return request(`/uni/employee/patients/${id}`);

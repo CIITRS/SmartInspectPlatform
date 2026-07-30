@@ -14,6 +14,15 @@ import (
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 )
 
+const informedConsentText = `本人已充分了解本次肿瘤相关分子检测的目的、流程、样本要求、可能的局限性及隐私保护说明。本检测结果仅供临床参考，不能单独作为疾病诊断或治疗依据，需由医生结合病史、影像、病理及其他检查综合判断。本人同意提供样本及必要信息用于本次检测，并确认以上信息由本人或合法授权代理人自愿签署。`
+
+func nullablePositiveInt(value int) interface{} {
+	if value > 0 {
+		return value
+	}
+	return nil
+}
+
 // ============================================================
 // 小程序专用 Handler（uni.go）
 // 所有接口通过 miniappAuth 中间件验证 base_miniapp_sessions
@@ -127,6 +136,8 @@ func HandleUniEmployeeSampleOptions(c *app.RequestContext, db *sql.DB) {
 	prefix := sampleCodePrefix(employeeNo)
 
 	var historicalSample interface{}
+	consentSigned := false
+	consentSignedAt := ""
 	patientIDs := strings.Split(strings.TrimSpace(c.Query("patient_ids")), ",")
 	nextSequence := nextSampleSequence(db, prefix)
 	if len(patientIDs) > 1 {
@@ -134,6 +145,11 @@ func HandleUniEmployeeSampleOptions(c *app.RequestContext, db *sql.DB) {
 	}
 	if len(patientIDs) == 1 {
 		if patientID, parseErr := strconv.Atoi(strings.TrimSpace(patientIDs[0])); parseErr == nil && patientID > 0 {
+			var signedAt sql.NullTime
+			if db.QueryRow(`SELECT signed_at FROM patient_informed_consent WHERE patient_id = ? LIMIT 1`, patientID).Scan(&signedAt) == nil && signedAt.Valid {
+				consentSigned = true
+				consentSignedAt = signedAt.Time.Format("2006-01-02 15:04")
+			}
 			patientQuery := "SELECT COUNT(*) FROM detect_patient WHERE id = ? AND is_active = 1"
 			patientArgs := []interface{}{patientID}
 			if accessFilter, accessArgs := miniappEmployeePatientAccessFilter(db, employeeID, ""); accessFilter != "" {
@@ -163,6 +179,19 @@ func HandleUniEmployeeSampleOptions(c *app.RequestContext, db *sql.DB) {
 			}
 		}
 	}
+	packages := []utils.H{}
+	if rows, queryErr := db.Query(`SELECT id, name, detection_count, price, COALESCE(description, '')
+		FROM sale_package WHERE status = 'active' ORDER BY id`); queryErr == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var id, detectionCount int
+			var name, description string
+			var price float64
+			if rows.Scan(&id, &name, &detectionCount, &price, &description) == nil {
+				packages = append(packages, utils.H{"id": id, "name": name, "detection_count": detectionCount, "price": price, "description": description})
+			}
+		}
+	}
 
 	c.JSON(consts.StatusOK, ApiResponse{
 		Code:    200,
@@ -175,6 +204,10 @@ func HandleUniEmployeeSampleOptions(c *app.RequestContext, db *sql.DB) {
 			"sample_prefix":     prefix,
 			"next_sequence":     nextSequence,
 			"historical_sample": historicalSample,
+			"packages":          packages,
+			"consent_signed":    consentSigned,
+			"consent_signed_at": consentSignedAt,
+			"consent_text":      informedConsentText,
 		},
 	})
 }
@@ -189,6 +222,8 @@ func HandleUniEmployeePatients(c *app.RequestContext, db *sql.DB) {
 
 	keyword := strings.TrimSpace(c.Query("keyword"))
 	infoStatus := strings.TrimSpace(c.Query("info_status"))
+	groupID, _ := strconv.Atoi(c.Query("group_id"))
+	cancerTypeID, _ := strconv.Atoi(c.Query("cancer_type_id"))
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
 	if page < 1 {
@@ -211,6 +246,17 @@ func HandleUniEmployeePatients(c *app.RequestContext, db *sql.DB) {
 		where = append(where, "(name LIKE ? OR phone LIKE ? OR id_document_no LIKE ? OR id_card LIKE ? OR patient_code LIKE ?)")
 		like := "%" + keyword + "%"
 		args = append(args, like, like, like, like, like)
+	}
+	if groupID > 0 {
+		where = append(where, `EXISTS (SELECT 1 FROM sale_patient_group_member gm
+			JOIN sale_patient_group g ON g.id = gm.group_id
+			WHERE gm.patient_id = detect_patient.id AND g.id = ? AND g.sales_user_id = ?)`)
+		args = append(args, groupID, employeeID)
+	}
+	if cancerTypeID > 0 {
+		where = append(where, `EXISTS (SELECT 1 FROM detect_sample fs
+			WHERE fs.patient_id = detect_patient.id AND fs.cancer_type_id = ?)`)
+		args = append(args, cancerTypeID)
 	}
 	diagnosisCompletedSQL := `(patient_status = 0
 		OR EXISTS (SELECT 1 FROM patient_follow_up fu WHERE fu.patient_id = detect_patient.id LIMIT 1)
@@ -236,7 +282,16 @@ func HandleUniEmployeePatients(c *app.RequestContext, db *sql.DB) {
 		CASE WHEN patient_status = 0
 			OR EXISTS (SELECT 1 FROM patient_follow_up fu WHERE fu.patient_id = detect_patient.id LIMIT 1)
 			OR COALESCE(NULLIF(TRIM(cancer_pathology), ''), NULLIF(TRIM(prognosis_info), ''), NULLIF(TRIM(other_info), ''), NULLIF(TRIM(report_files), '')) IS NOT NULL
-			THEN 1 ELSE 0 END AS diagnosis_completed
+			THEN 1 ELSE 0 END AS diagnosis_completed,
+		COALESCE((SELECT g.id FROM sale_patient_group_member gm
+			JOIN sale_patient_group g ON g.id = gm.group_id
+			WHERE gm.patient_id = detect_patient.id AND g.sales_user_id = ` + strconv.Itoa(employeeID) + ` LIMIT 1), 0) AS group_id,
+		COALESCE((SELECT g.name FROM sale_patient_group_member gm
+			JOIN sale_patient_group g ON g.id = gm.group_id
+			WHERE gm.patient_id = detect_patient.id AND g.sales_user_id = ` + strconv.Itoa(employeeID) + ` LIMIT 1), '') AS group_name,
+		COALESCE((SELECT GROUP_CONCAT(DISTINCT ct.name ORDER BY ct.name SEPARATOR '、')
+			FROM detect_sample cs LEFT JOIN setting_cancer_type ct ON ct.id = cs.cancer_type_id
+			WHERE cs.patient_id = detect_patient.id), '') AS cancer_types
 		FROM detect_patient
 		WHERE ` + whereSQL + ` ORDER BY created_at DESC LIMIT ? OFFSET ?`
 	queryArgs := append([]interface{}{}, args...)
@@ -252,11 +307,11 @@ func HandleUniEmployeePatients(c *app.RequestContext, db *sql.DB) {
 
 	list := []utils.H{}
 	for rows.Next() {
-		var id, completionStatus, patientStatus, diagnosisCompleted int
-		var patientCode, name, gender, idDocumentType, idDocumentNo, phone, diagnosis, smokingStatus string
+		var id, completionStatus, patientStatus, diagnosisCompleted, patientGroupID int
+		var patientCode, name, gender, idDocumentType, idDocumentNo, phone, diagnosis, smokingStatus, patientGroupName, cancerTypes string
 		var birthday sql.NullTime
 		var createdAt time.Time
-		if err := rows.Scan(&id, &patientCode, &name, &gender, &idDocumentType, &idDocumentNo, &phone, &birthday, &diagnosis, &smokingStatus, &completionStatus, &patientStatus, &createdAt, &diagnosisCompleted); err != nil {
+		if err := rows.Scan(&id, &patientCode, &name, &gender, &idDocumentType, &idDocumentNo, &phone, &birthday, &diagnosis, &smokingStatus, &completionStatus, &patientStatus, &createdAt, &diagnosisCompleted, &patientGroupID, &patientGroupName, &cancerTypes); err != nil {
 			log.Printf("Scan miniapp employee patient error: %v", err)
 			continue
 		}
@@ -276,6 +331,9 @@ func HandleUniEmployeePatients(c *app.RequestContext, db *sql.DB) {
 			"diagnosis_completed": diagnosisCompleted,
 			"info_status":         map[bool]string{true: "completed", false: "pending"}[diagnosisCompleted == 1],
 			"created_at":          createdAt.Format("2006-01-02 15:04"),
+			"group_id":            patientGroupID,
+			"group_name":          patientGroupName,
+			"cancer_types":        cancerTypes,
 		}
 		if birthday.Valid {
 			item["birthday"] = birthday.Time.Format("2006-01-02")
@@ -1562,7 +1620,7 @@ func HandleUniGetReportDetail(c *app.RequestContext, db *sql.DB) {
 		s.collection_date, s.sample_type_id, st.name as sample_type,
 		COALESCE(gu.real_name, gu.username), COALESCE(ru.real_name, ru.username),
 		COALESCE(tu.real_name, tu.username),
-		r.reviewed_time, r.rejected_reason
+		r.reviewed_time, r.rejected_reason, r.patient_viewed_at, COALESCE(r.patient_view_count, 0)
 		FROM detect_report r
 		JOIN detect_sample s ON r.sample_id = s.id
 		LEFT JOIN detect_batch b ON s.batch_id = b.id
@@ -1586,6 +1644,8 @@ func HandleUniGetReportDetail(c *app.RequestContext, db *sql.DB) {
 	var generatedBy, reviewedBy, inspector, rejectedReason sql.NullString
 	var collectionDate sql.NullTime
 	var reviewedTime sql.NullTime
+	var patientViewedAt sql.NullTime
+	var patientViewCount int
 	var sampleTypeId sql.NullInt64 // 新增这个变量
 
 	err = db.QueryRow(query, args...).Scan(
@@ -1593,7 +1653,7 @@ func HandleUniGetReportDetail(c *app.RequestContext, db *sql.DB) {
 		&generatedTime, &filePath, &sampleCode,
 		&patientName, &patientGender, &idCard,
 		&collectionDate, &sampleTypeId, &sampleType,
-		&generatedBy, &reviewedBy, &inspector, &reviewedTime, &rejectedReason,
+		&generatedBy, &reviewedBy, &inspector, &reviewedTime, &rejectedReason, &patientViewedAt, &patientViewCount,
 	)
 
 	if err != nil {
@@ -1617,11 +1677,30 @@ func HandleUniGetReportDetail(c *app.RequestContext, db *sql.DB) {
 	}
 
 	report := utils.H{
-		"id":                id,
-		"report_no":         reportNo,
-		"report_type":       normalizeAssignedReportType(reportType),
-		"report_type_label": reportTypeDisplayLabel(reportType),
-		"status":            status,
+		"id":                 id,
+		"report_no":          reportNo,
+		"report_type":        normalizeAssignedReportType(reportType),
+		"report_type_label":  reportTypeDisplayLabel(reportType),
+		"status":             status,
+		"patient_viewed":     patientViewedAt.Valid,
+		"patient_view_count": patientViewCount,
+	}
+	if identityTypeStr != "employee" {
+		if _, updateErr := db.Exec(`UPDATE detect_report
+			SET patient_viewed_at = COALESCE(patient_viewed_at, NOW()),
+				patient_view_count = COALESCE(patient_view_count, 0) + 1,
+				updated_at = updated_at
+			WHERE id = ?`, reportID); updateErr == nil {
+			if !patientViewedAt.Valid {
+				patientViewedAt = sql.NullTime{Time: time.Now(), Valid: true}
+			}
+			patientViewCount++
+			report["patient_viewed"] = true
+			report["patient_view_count"] = patientViewCount
+		}
+	}
+	if patientViewedAt.Valid {
+		report["patient_viewed_at"] = patientViewedAt.Time.Format("2006-01-02 15:04")
 	}
 
 	// 解析报告JSON数据
@@ -2189,7 +2268,8 @@ func HandleUniEmployeeStats(c *app.RequestContext, db *sql.DB) {
 func HandleUniEmployeeReports(c *app.RequestContext, db *sql.DB) {
 	patientName := strings.TrimSpace(c.Query("patient_name"))
 	query := `SELECT r.id, r.report_no, r.report_type, r.status, r.generated_time,
-		s.sample_code, p.name as patient_name, COALESCE(gu.real_name, gu.username)
+		s.sample_code, p.name as patient_name, COALESCE(gu.real_name, gu.username),
+		r.patient_viewed_at, COALESCE(r.patient_view_count, 0)
 		FROM detect_report r
 		JOIN detect_sample s ON r.sample_id = s.id
 		JOIN detect_patient p ON r.patient_id = p.id
@@ -2220,19 +2300,26 @@ func HandleUniEmployeeReports(c *app.RequestContext, db *sql.DB) {
 		var reportNo, reportType, status string
 		var generatedTime sql.NullTime
 		var sampleCode, patientName, generatedBy sql.NullString
+		var patientViewedAt sql.NullTime
+		var patientViewCount int
 
-		err := rows.Scan(&id, &reportNo, &reportType, &status, &generatedTime, &sampleCode, &patientName, &generatedBy)
+		err := rows.Scan(&id, &reportNo, &reportType, &status, &generatedTime, &sampleCode, &patientName, &generatedBy, &patientViewedAt, &patientViewCount)
 		if err != nil {
 			log.Printf("Scan employee report error: %v", err)
 			continue
 		}
 
 		report := utils.H{
-			"id":                id,
-			"report_no":         reportNo,
-			"report_type":       normalizeAssignedReportType(reportType),
-			"report_type_label": reportTypeDisplayLabel(reportType),
-			"status":            status,
+			"id":                 id,
+			"report_no":          reportNo,
+			"report_type":        normalizeAssignedReportType(reportType),
+			"report_type_label":  reportTypeDisplayLabel(reportType),
+			"status":             status,
+			"patient_viewed":     patientViewedAt.Valid,
+			"patient_view_count": patientViewCount,
+		}
+		if patientViewedAt.Valid {
+			report["patient_viewed_at"] = patientViewedAt.Time.Format("2006-01-02 15:04")
 		}
 
 		if generatedTime.Valid {
@@ -2609,15 +2696,21 @@ func HandleUniEmployeeAllocateSamples(c *app.RequestContext, db *sql.DB) {
 	}
 
 	var req struct {
-		PatientIDs       []int  `json:"patient_ids"`
-		SampleTypeID     int    `json:"sample_type_id"`
-		CancerTypeID     int    `json:"cancer_type_id"`
-		TreatmentStageID int    `json:"treatment_stage_id"`
-		ReportType       string `json:"report_type"`
-		StartSequence    int    `json:"start_sequence"`
-		ManualSuffix     string `json:"manual_suffix"`
-		Organization     string `json:"organization"`
-		Notes            string `json:"notes"`
+		PatientIDs           []int  `json:"patient_ids"`
+		SampleTypeID         int    `json:"sample_type_id"`
+		CancerTypeID         int    `json:"cancer_type_id"`
+		TreatmentStageID     int    `json:"treatment_stage_id"`
+		ReportType           string `json:"report_type"`
+		StartSequence        int    `json:"start_sequence"`
+		ManualSuffix         string `json:"manual_suffix"`
+		Organization         string `json:"organization"`
+		Notes                string `json:"notes"`
+		ServiceMode          string `json:"service_mode"`
+		SalePackageID        int    `json:"sale_package_id"`
+		ConsentSignature     string `json:"consent_signature"`
+		ConsentSignedName    string `json:"consent_signed_name"`
+		ReturnExpressCompany string `json:"return_express_company"`
+		ReturnTrackingNumber string `json:"return_tracking_number"`
 	}
 	body, err := c.Body()
 	if err != nil || json.Unmarshal(body, &req) != nil {
@@ -2639,6 +2732,26 @@ func HandleUniEmployeeAllocateSamples(c *app.RequestContext, db *sql.DB) {
 	req.Organization = strings.TrimSpace(req.Organization)
 	if req.Organization == "" {
 		req.Organization = "个人送检"
+	}
+	req.ServiceMode = strings.ToLower(strings.TrimSpace(req.ServiceMode))
+	if req.ServiceMode == "" {
+		req.ServiceMode = "single"
+	}
+	if req.ServiceMode != "single" && req.ServiceMode != "package" {
+		c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: "检测方式不正确", Data: nil})
+		return
+	}
+	if req.ServiceMode == "package" && req.SalePackageID <= 0 {
+		c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: "请选择检测套餐", Data: nil})
+		return
+	}
+	if len(req.PatientIDs) == 1 {
+		var consentCount int
+		_ = db.QueryRow(`SELECT COUNT(*) FROM patient_informed_consent WHERE patient_id = ?`, req.PatientIDs[0]).Scan(&consentCount)
+		if consentCount == 0 && (strings.TrimSpace(req.ConsentSignature) == "" || strings.TrimSpace(req.ConsentSignedName) == "") {
+			c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: "请阅读知情同意书并完成手写签名", Data: nil})
+			return
+		}
 	}
 
 	employeeNo, err := getEmployeeIDForSampleCode(db, employeeID)
@@ -2713,17 +2826,37 @@ func HandleUniEmployeeAllocateSamples(c *app.RequestContext, db *sql.DB) {
 			return
 		}
 		code := codes[i]
+		if strings.TrimSpace(req.ConsentSignature) != "" {
+			if _, err := tx.Exec(`INSERT INTO patient_informed_consent
+				(patient_id, consent_version, consent_text, signature_data, signed_name, signed_by_user_id, signed_at, created_at, updated_at)
+				VALUES (?, 'v1', ?, ?, ?, ?, NOW(), NOW(), NOW())
+				ON DUPLICATE KEY UPDATE patient_id = patient_id`,
+				patientID, informedConsentText, req.ConsentSignature, strings.TrimSpace(req.ConsentSignedName), employeeID); err != nil {
+				c.JSON(consts.StatusInternalServerError, ApiResponse{Code: 500, Success: false, Message: "保存知情同意书失败", Data: nil})
+				return
+			}
+		}
 		result, err := tx.Exec(`INSERT INTO detect_sample
 			(sample_code, patient_id, sample_type_id, cancer_type_id, treatment_stage_id, collection_date, collection_operator,
-			 sample_status, report_type, notes, organization, sample_created_at, sample_updated_at)
-			VALUES (?, ?, ?, ?, ?, NOW(), ?, 'created', ?, ?, ?, NOW(), NOW())`,
-			code, patientID, req.SampleTypeID, req.CancerTypeID, req.TreatmentStageID, employeeID, reportType, req.Notes, req.Organization)
+			 sample_status, report_type, notes, organization, service_mode, sale_package_id, sample_created_at, sample_updated_at)
+			VALUES (?, ?, ?, ?, ?, NOW(), ?, 'created', ?, ?, ?, ?, ?, NOW(), NOW())`,
+			code, patientID, req.SampleTypeID, req.CancerTypeID, req.TreatmentStageID, employeeID, reportType, req.Notes, req.Organization,
+			req.ServiceMode, nullablePositiveInt(req.SalePackageID))
 		if err != nil {
 			log.Printf("Miniapp allocate sample %s error: %v", code, err)
 			c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: "新增样本失败", Data: utils.H{"error": err.Error()}})
 			return
 		}
 		id, _ := result.LastInsertId()
+		if tracking := strings.TrimSpace(req.ReturnTrackingNumber); tracking != "" {
+			if _, err := tx.Exec(`INSERT INTO detect_sample_express
+				(sample_id, sample_code, express_company, tracking_number, status, created_at, updated_at)
+				VALUES (?, ?, ?, ?, 'in_transit', NOW(), NOW())`,
+				id, code, strings.TrimSpace(req.ReturnExpressCompany), tracking); err != nil {
+				c.JSON(consts.StatusInternalServerError, ApiResponse{Code: 500, Success: false, Message: "保存回寄快递单号失败", Data: nil})
+				return
+			}
+		}
 		markSampleCodeUsed(tx, code)
 		created = append(created, utils.H{"id": id, "sample_code": code, "patient_id": patientID, "patient_name": patientName})
 	}

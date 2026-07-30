@@ -332,18 +332,22 @@ func receivedSamplesForCodes(db *sql.DB, sampleCodes []string) []utils.H {
 func HandleCreateSample(c *app.RequestContext, db *sql.DB) {
 	// 解析请求体
 	var req struct {
-		PatientID        int       `json:"patient_id"`
-		PatientCode      string    `json:"patient_code"`
-		PatientIDCard    string    `json:"patient_id_card"`
-		SampleTypeID     int       `json:"sample_type_id" binding:"required"`
-		CancerTypeID     int       `json:"cancer_type_id" binding:"required"`
-		TreatmentStageID int       `json:"treatment_stage_id" binding:"required"`
-		CollectionDate   time.Time `json:"collection_date" binding:"required"`
-		Notes            string    `json:"notes"`
-		SampleCode       string    `json:"sample_code"`
-		ReportType       string    `json:"report_type"`
-		Status           string    `json:"status"`
-		Organization     string    `json:"organization"`
+		PatientID            int       `json:"patient_id"`
+		PatientCode          string    `json:"patient_code"`
+		PatientIDCard        string    `json:"patient_id_card"`
+		SampleTypeID         int       `json:"sample_type_id" binding:"required"`
+		CancerTypeID         int       `json:"cancer_type_id" binding:"required"`
+		TreatmentStageID     int       `json:"treatment_stage_id" binding:"required"`
+		CollectionDate       time.Time `json:"collection_date" binding:"required"`
+		Notes                string    `json:"notes"`
+		SampleCode           string    `json:"sample_code"`
+		ReportType           string    `json:"report_type"`
+		Status               string    `json:"status"`
+		Organization         string    `json:"organization"`
+		ServiceMode          string    `json:"service_mode"`
+		SalePackageID        int       `json:"sale_package_id"`
+		ReturnExpressCompany string    `json:"return_express_company"`
+		ReturnTrackingNumber string    `json:"return_tracking_number"`
 	}
 	if err := c.Bind(&req); err != nil {
 		log.Printf("Failed to bind detect_sample creation request: %v", err)
@@ -433,9 +437,17 @@ func HandleCreateSample(c *app.RequestContext, db *sql.DB) {
 	if req.Organization == "" {
 		req.Organization = "个人送检"
 	}
+	req.ServiceMode = strings.ToLower(strings.TrimSpace(req.ServiceMode))
+	if req.ServiceMode == "" {
+		req.ServiceMode = "single"
+	}
+	if req.ServiceMode == "package" && req.SalePackageID <= 0 {
+		c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: "请选择检测套餐", Data: nil})
+		return
+	}
 
 	// 插入样本到数据库
-	result, err := db.Exec(`INSERT INTO detect_sample (sample_code, patient_id, sample_type_id, cancer_type_id, treatment_stage_id, collection_date, collection_operator, sample_status, report_type, notes, organization, sample_created_at, sample_updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'created', ?, ?, ?, NOW(), NOW())`, detect_sampleCode, req.PatientID, req.SampleTypeID, req.CancerTypeID, req.TreatmentStageID, req.CollectionDate, userID, reportType, req.Notes, req.Organization)
+	result, err := db.Exec(`INSERT INTO detect_sample (sample_code, patient_id, sample_type_id, cancer_type_id, treatment_stage_id, collection_date, collection_operator, sample_status, report_type, notes, organization, service_mode, sale_package_id, sample_created_at, sample_updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'created', ?, ?, ?, ?, ?, NOW(), NOW())`, detect_sampleCode, req.PatientID, req.SampleTypeID, req.CancerTypeID, req.TreatmentStageID, req.CollectionDate, userID, reportType, req.Notes, req.Organization, req.ServiceMode, nullablePositiveInt(req.SalePackageID))
 	if err != nil {
 		log.Printf("Failed to create detect_sample: %v", err)
 		message := "服务器内部错误"
@@ -476,6 +488,13 @@ func HandleCreateSample(c *app.RequestContext, db *sql.DB) {
 			Data:    utils.H{"error": err.Error()},
 		})
 		return
+	}
+	if tracking := strings.TrimSpace(req.ReturnTrackingNumber); tracking != "" {
+		if _, expressErr := db.Exec(`INSERT INTO detect_sample_express
+			(sample_id, sample_code, express_company, tracking_number, status, created_at, updated_at)
+			VALUES (?, ?, ?, ?, 'in_transit', NOW(), NOW())`, id, detect_sampleCode, strings.TrimSpace(req.ReturnExpressCompany), tracking); expressErr != nil {
+			log.Printf("Failed to save return express for sample %s: %v", detect_sampleCode, expressErr)
+		}
 	}
 
 	// 查询刚创建的样本详细信息
@@ -545,17 +564,21 @@ func HandleCreateSample(c *app.RequestContext, db *sql.DB) {
 
 func HandleAllocateSamples(c *app.RequestContext, db *sql.DB) {
 	var req struct {
-		PatientIDs         []int     `json:"patient_ids"`
-		SampleTypeID       int       `json:"sample_type_id" binding:"required"`
-		CancerTypeID       int       `json:"cancer_type_id" binding:"required"`
-		TreatmentStageID   int       `json:"treatment_stage_id" binding:"required"`
-		ReportType         string    `json:"report_type"`
-		StartSequence      int       `json:"start_sequence"`
-		ManualSuffix       string    `json:"manual_suffix"`
-		CollectionDate     time.Time `json:"collection_date"`
-		Notes              string    `json:"notes"`
-		Organization       string    `json:"organization"`
-		UseCurrentPatients bool      `json:"use_current_patients"`
+		PatientIDs           []int     `json:"patient_ids"`
+		SampleTypeID         int       `json:"sample_type_id" binding:"required"`
+		CancerTypeID         int       `json:"cancer_type_id" binding:"required"`
+		TreatmentStageID     int       `json:"treatment_stage_id" binding:"required"`
+		ReportType           string    `json:"report_type"`
+		StartSequence        int       `json:"start_sequence"`
+		ManualSuffix         string    `json:"manual_suffix"`
+		CollectionDate       time.Time `json:"collection_date"`
+		Notes                string    `json:"notes"`
+		Organization         string    `json:"organization"`
+		UseCurrentPatients   bool      `json:"use_current_patients"`
+		ServiceMode          string    `json:"service_mode"`
+		SalePackageID        int       `json:"sale_package_id"`
+		ReturnExpressCompany string    `json:"return_express_company"`
+		ReturnTrackingNumber string    `json:"return_tracking_number"`
 	}
 	if err := c.Bind(&req); err != nil {
 		log.Printf("Failed to bind sample allocation request: %v", err)
@@ -569,6 +592,14 @@ func HandleAllocateSamples(c *app.RequestContext, db *sql.DB) {
 	req.Organization = strings.TrimSpace(req.Organization)
 	if req.Organization == "" {
 		req.Organization = "个人送检"
+	}
+	req.ServiceMode = strings.ToLower(strings.TrimSpace(req.ServiceMode))
+	if req.ServiceMode == "" {
+		req.ServiceMode = "single"
+	}
+	if req.ServiceMode == "package" && req.SalePackageID <= 0 {
+		c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: "请选择检测套餐", Data: nil})
+		return
 	}
 
 	userID, exists := currentUserID(c)
@@ -653,9 +684,10 @@ func HandleAllocateSamples(c *app.RequestContext, db *sql.DB) {
 		}
 		code := codes[i]
 		result, err := tx.Exec(`INSERT INTO detect_sample
-			(sample_code, patient_id, sample_type_id, cancer_type_id, treatment_stage_id, collection_date, collection_operator, sample_status, report_type, notes, organization, sample_created_at, sample_updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, 'created', ?, ?, ?, NOW(), NOW())`,
-			code, patientID, req.SampleTypeID, req.CancerTypeID, req.TreatmentStageID, req.CollectionDate, userID, reportType, req.Notes, req.Organization)
+			(sample_code, patient_id, sample_type_id, cancer_type_id, treatment_stage_id, collection_date, collection_operator, sample_status, report_type, notes, organization, service_mode, sale_package_id, sample_created_at, sample_updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, 'created', ?, ?, ?, ?, ?, NOW(), NOW())`,
+			code, patientID, req.SampleTypeID, req.CancerTypeID, req.TreatmentStageID, req.CollectionDate, userID, reportType, req.Notes, req.Organization,
+			req.ServiceMode, nullablePositiveInt(req.SalePackageID))
 		if err != nil {
 			log.Printf("Failed to allocate sample %s: %v", code, err)
 			message := "新增样本失败"
@@ -666,6 +698,15 @@ func HandleAllocateSamples(c *app.RequestContext, db *sql.DB) {
 			return
 		}
 		id, _ := result.LastInsertId()
+		if len(req.PatientIDs) == 1 && strings.TrimSpace(req.ReturnTrackingNumber) != "" {
+			if _, err := tx.Exec(`INSERT INTO detect_sample_express
+				(sample_id, sample_code, express_company, tracking_number, status, created_at, updated_at)
+				VALUES (?, ?, ?, ?, 'in_transit', NOW(), NOW())`,
+				id, code, strings.TrimSpace(req.ReturnExpressCompany), strings.TrimSpace(req.ReturnTrackingNumber)); err != nil {
+				c.JSON(consts.StatusInternalServerError, ApiResponse{Code: 500, Success: false, Message: "保存回寄快递单号失败", Data: nil})
+				return
+			}
+		}
 		markSampleCodeUsed(tx, code)
 		created = append(created, utils.H{
 			"id":           id,

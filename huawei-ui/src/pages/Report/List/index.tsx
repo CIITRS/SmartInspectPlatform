@@ -154,6 +154,15 @@ const List: React.FC = () => {
     },
     { title: '患者姓名', dataIndex: 'patientName', key: 'patientName' },
     {
+      title: '患者查阅',
+      dataIndex: 'patientViewed',
+      key: 'patientViewed',
+      render: (viewed: boolean, record: Report & { patientViewedAt?: string; patientViewCount?: number }) =>
+        viewed
+          ? <Tag color="green">已查阅{record.patientViewCount ? ` ${record.patientViewCount}次` : ''}</Tag>
+          : <Tag color="orange">未查阅</Tag>,
+    },
+    {
       title: '状态',
       dataIndex: 'status',
       key: 'status',

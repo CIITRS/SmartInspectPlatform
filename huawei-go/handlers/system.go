@@ -2279,7 +2279,6 @@ func HandleUpdateDepartment(c *app.RequestContext, db *sql.DB) {
 		})
 		return
 	}
-
 	// 返回更新成功响应
 	c.JSON(consts.StatusOK, ApiResponse{
 		Code:    200,
@@ -2852,6 +2851,13 @@ func ensureSystemSettingDefaults(db *sql.DB) {
 		IsEncrypted int
 		Description string
 	}{
+		{"AI_API_KEY", os.Getenv("AI_API_KEY"), "password", 1, "百度千帆 AI API Key"},
+		{"AI_API_URL", firstNonEmptyString(os.Getenv("AI_API_URL"), "https://qianfan.baidubce.com/v2"), "text", 0, "百度千帆 OpenAI 兼容接口 Base URL"},
+		{"AI_MODEL", firstNonEmptyString(os.Getenv("AI_MODEL"), "ernie-lite-pro-128k"), "text", 0, "AI 客服文本模型"},
+		{"AI_PROMPT", os.Getenv("AI_PROMPT"), "textarea", 0, "AI 客服系统提示词"},
+		{"AI_REPORT_VISION_MODEL", firstNonEmptyString(os.Getenv("AI_REPORT_VISION_MODEL"), "ernie-4.5-turbo-vl-32k"), "text", 0, "图片报告视觉分析模型"},
+		{"AI_REPORT_TEXT_MODEL", firstNonEmptyString(os.Getenv("AI_REPORT_TEXT_MODEL"), "ernie-lite-pro-128k"), "text", 0, "PDF 报告文本分析模型"},
+		{"AI_REPORT_PROMPT", firstNonEmptyString(os.Getenv("AI_REPORT_PROMPT"), defaultReportAnalysisPrompt), "textarea", 0, "患者上传报告分析提示词"},
 		{"SMS_BAIDU_ACCESS_KEY", os.Getenv("SMS_BAIDU_ACCESS_KEY"), "text", 0, "百度智能云 SMS Access Key"},
 		{"SMS_BAIDU_SECRET_KEY", os.Getenv("SMS_BAIDU_SECRET_KEY"), "password", 1, "百度智能云 SMS Secret Key"},
 		{"SMS_BAIDU_ENDPOINT", firstNonEmptyString(os.Getenv("SMS_BAIDU_ENDPOINT"), "http://sms.bj.baidubce.com"), "text", 0, "百度智能云 SMS 北京区域服务域名"},
@@ -2953,6 +2959,9 @@ func HandleGetSystemSettings(c *app.RequestContext, db *sql.DB) {
 			// 解密值
 			keyValue = decryptConfigValue(keyValue)
 		}
+		if keyName == "AI_API_KEY" {
+			keyValue = maskAPIKey(keyValue)
+		}
 
 		// 构建配置信息
 		setting := utils.H{
@@ -3018,6 +3027,12 @@ func HandleUpdateSystemSettings(c *app.RequestContext, db *sql.DB) {
 	for _, setting := range req.Settings {
 		// 如果是加密字段，需要加密
 		value := setting.KeyValue
+		if setting.KeyName == "AI_API_KEY" && strings.Contains(value, "******") {
+			var existing string
+			if err := tx.QueryRow(`SELECT key_value FROM setting_system WHERE key_name = ?`, setting.KeyName).Scan(&existing); err == nil {
+				value = decryptConfigValue(existing)
+			}
+		}
 		if setting.IsEncrypted == 1 {
 			// 加密值
 			value = encryptConfigValue(value)
@@ -3052,6 +3067,7 @@ func HandleUpdateSystemSettings(c *app.RequestContext, db *sql.DB) {
 		})
 		return
 	}
+	ReloadAISettings(db)
 
 	// 返回更新成功响应
 	c.JSON(consts.StatusOK, ApiResponse{
@@ -4567,24 +4583,12 @@ func maskAPIKey(apiKey string) string {
 }
 
 // HandleGetAISettings 获取AI配置信息
-func HandleGetAISettings(c *app.RequestContext, apiKey, apiURL, model, prompt string) {
-	// 优先使用内存中的最新变量，兼容 main.go 的传参
+func HandleGetAISettings(c *app.RequestContext, db *sql.DB) {
+	ReloadAISettings(db)
 	currentAPIKey := aiAPIKey
-	if currentAPIKey == "" {
-		currentAPIKey = apiKey
-	}
 	currentURL := aiAPIURL
-	if currentURL == "" {
-		currentURL = apiURL
-	}
 	currentModel := aiModel
-	if currentModel == "" {
-		currentModel = model
-	}
 	currentPrompt := aiPrompt
-	if currentPrompt == "" {
-		currentPrompt = prompt
-	}
 
 	// 脱敏处理API Key
 	maskedAPIKey := maskAPIKey(currentAPIKey)
@@ -4595,68 +4599,28 @@ func HandleGetAISettings(c *app.RequestContext, apiKey, apiURL, model, prompt st
 		Success: true,
 		Message: "获取AI配置信息成功",
 		Data: utils.H{
-			"api_key":    maskedAPIKey,
-			"api_url":    currentURL,
-			"model":      currentModel,
-			"prompt":     currentPrompt,
-			"configured": currentAPIKey != "",
+			"api_key":             maskedAPIKey,
+			"api_url":             currentURL,
+			"model":               currentModel,
+			"prompt":              currentPrompt,
+			"report_vision_model": aiReportVisionModel,
+			"report_text_model":   aiReportTextModel,
+			"report_prompt":       aiReportPrompt,
+			"configured":          currentAPIKey != "",
 		},
 	})
 }
 
-// escapeEnvValue 对写入 env 的字段值进行双引号和特殊字符转义处理
-func escapeEnvValue(val string) string {
-	val = strings.ReplaceAll(val, "\\", "\\\\")
-	val = strings.ReplaceAll(val, "\"", "\\\"")
-	val = strings.ReplaceAll(val, "\n", "\\n")
-	val = strings.ReplaceAll(val, "\r", "\\r")
-	return "\"" + val + "\""
-}
-
-// updateEnvFile 逐行替换或追加修改环境变量到 .env 文件
-func updateEnvFile(updates map[string]string) error {
-	envPath := ".env"
-	content, err := os.ReadFile(envPath)
-	if err != nil {
-		return err
-	}
-
-	lines := strings.Split(string(content), "\n")
-	keysFound := make(map[string]bool)
-
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "#") || trimmed == "" {
-			continue
-		}
-		parts := strings.SplitN(trimmed, "=", 2)
-		if len(parts) > 0 {
-			key := strings.TrimSpace(parts[0])
-			if newVal, ok := updates[key]; ok {
-				lines[i] = key + "=" + newVal
-				keysFound[key] = true
-			}
-		}
-	}
-
-	// 追加未在文件里找到的键
-	for key, val := range updates {
-		if !keysFound[key] {
-			lines = append(lines, key+"="+val)
-		}
-	}
-
-	output := strings.Join(lines, "\n")
-	return os.WriteFile(envPath, []byte(output), 0644)
-}
-
-// HandleUpdateAISettings 保存并更新AI配置，直接写入.env文件且内存立即生效
-func HandleUpdateAISettings(c *app.RequestContext) {
+// HandleUpdateAISettings 将 AI 配置加密保存到数据库并立即生效。
+func HandleUpdateAISettings(c *app.RequestContext, db *sql.DB) {
 	var req struct {
-		APIKey string `json:"api_key"`
-		APIURL string `json:"api_url"`
-		Model  string `json:"model"`
-		Prompt string `json:"prompt"`
+		APIKey            string `json:"api_key"`
+		APIURL            string `json:"api_url"`
+		Model             string `json:"model"`
+		Prompt            string `json:"prompt"`
+		ReportVisionModel string `json:"report_vision_model"`
+		ReportTextModel   string `json:"report_text_model"`
+		ReportPrompt      string `json:"report_prompt"`
 	}
 
 	if err := c.Bind(&req); err != nil {
@@ -4674,47 +4638,74 @@ func HandleUpdateAISettings(c *app.RequestContext) {
 	if strings.Contains(req.APIKey, "******") {
 		finalAPIKey = aiAPIKey
 	}
-
-	// 动态更新 handlers 全局变量与 os.Getenv
-	aiAPIKey = finalAPIKey
-	aiAPIURL = req.APIURL
-	aiModel = req.Model
-	aiPrompt = req.Prompt
-
-	os.Setenv("AI_API_KEY", finalAPIKey)
-	os.Setenv("AI_API_URL", req.APIURL)
-	os.Setenv("AI_MODEL", req.Model)
-	os.Setenv("AI_PROMPT", req.Prompt)
-
-	// 更新 .env 文件中对应的条目
-	updates := map[string]string{
-		"AI_API_KEY": finalAPIKey,
-		"AI_API_URL": req.APIURL,
-		"AI_MODEL":   req.Model,
-		"AI_PROMPT":  escapeEnvValue(req.Prompt),
+	req.APIURL = strings.TrimSpace(req.APIURL)
+	req.Model = strings.TrimSpace(req.Model)
+	req.ReportVisionModel = strings.TrimSpace(req.ReportVisionModel)
+	req.ReportTextModel = strings.TrimSpace(req.ReportTextModel)
+	if finalAPIKey == "" || req.APIURL == "" || req.Model == "" || req.ReportVisionModel == "" || req.ReportTextModel == "" {
+		c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: "请完整填写 AI 接口、密钥及模型", Data: nil})
+		return
 	}
-
-	if err := updateEnvFile(updates); err != nil {
-		log.Printf("Failed to save AI config into .env: %v", err)
+	if strings.TrimSpace(req.ReportPrompt) == "" {
+		req.ReportPrompt = defaultReportAnalysisPrompt
+	}
+	values := []struct {
+		key, value, keyType, description string
+		encrypted                        int
+	}{
+		{"AI_API_KEY", finalAPIKey, "password", "百度千帆 AI API Key", 1},
+		{"AI_API_URL", req.APIURL, "text", "百度千帆 OpenAI 兼容接口 Base URL", 0},
+		{"AI_MODEL", req.Model, "text", "AI 客服文本模型", 0},
+		{"AI_PROMPT", req.Prompt, "textarea", "AI 客服系统提示词", 0},
+		{"AI_REPORT_VISION_MODEL", req.ReportVisionModel, "text", "图片报告视觉分析模型", 0},
+		{"AI_REPORT_TEXT_MODEL", req.ReportTextModel, "text", "PDF 报告文本分析模型", 0},
+		{"AI_REPORT_PROMPT", req.ReportPrompt, "textarea", "患者上传报告分析提示词", 0},
+	}
+	tx, err := db.Begin()
+	if err != nil {
 		c.JSON(consts.StatusInternalServerError, ApiResponse{
 			Code:    500,
 			Success: false,
-			Message: "保存配置写入文件失败",
+			Message: "保存配置失败",
 			Data:    utils.H{"error": err.Error()},
 		})
 		return
 	}
+	defer tx.Rollback()
+	for _, item := range values {
+		value := item.value
+		if item.encrypted == 1 {
+			value = encryptConfigValue(value)
+		}
+		if _, err := tx.Exec(`INSERT INTO setting_system
+			(key_name, key_value, key_type, is_encrypted, description, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, NOW(), NOW())
+			ON DUPLICATE KEY UPDATE key_value = VALUES(key_value), key_type = VALUES(key_type),
+				is_encrypted = VALUES(is_encrypted), description = VALUES(description), updated_at = NOW()`,
+			item.key, value, item.keyType, item.encrypted, item.description); err != nil {
+			c.JSON(consts.StatusInternalServerError, ApiResponse{Code: 500, Success: false, Message: "保存配置失败", Data: utils.H{"error": err.Error()}})
+			return
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		c.JSON(consts.StatusInternalServerError, ApiResponse{Code: 500, Success: false, Message: "保存配置失败", Data: utils.H{"error": err.Error()}})
+		return
+	}
+	ReloadAISettings(db)
 
 	c.JSON(consts.StatusOK, ApiResponse{
 		Code:    200,
 		Success: true,
 		Message: "修改并保存AI配置成功",
 		Data: utils.H{
-			"api_key":    maskAPIKey(finalAPIKey),
-			"api_url":    req.APIURL,
-			"model":      req.Model,
-			"prompt":     req.Prompt,
-			"configured": finalAPIKey != "",
+			"api_key":             maskAPIKey(finalAPIKey),
+			"api_url":             req.APIURL,
+			"model":               req.Model,
+			"prompt":              req.Prompt,
+			"report_vision_model": req.ReportVisionModel,
+			"report_text_model":   req.ReportTextModel,
+			"report_prompt":       req.ReportPrompt,
+			"configured":          finalAPIKey != "",
 		},
 	})
 }

@@ -414,6 +414,39 @@ func EnsureSchema(db *sql.DB, dbName string) error {
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,
+		`CREATE TABLE IF NOT EXISTS sale_patient_group (
+			id INT AUTO_INCREMENT PRIMARY KEY,
+			sales_user_id INT NOT NULL,
+			name VARCHAR(100) NOT NULL,
+			color VARCHAR(20) DEFAULT '#1677ff',
+			sort_order INT DEFAULT 0,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+			UNIQUE KEY uk_sale_patient_group_owner_name (sales_user_id, name),
+			KEY idx_sale_patient_group_owner (sales_user_id)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,
+		`CREATE TABLE IF NOT EXISTS sale_patient_group_member (
+			id INT AUTO_INCREMENT PRIMARY KEY,
+			group_id INT NOT NULL,
+			patient_id INT NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE KEY uk_sale_patient_group_member (group_id, patient_id),
+			KEY idx_sale_patient_group_member_patient (patient_id)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,
+		`CREATE TABLE IF NOT EXISTS patient_informed_consent (
+			id INT AUTO_INCREMENT PRIMARY KEY,
+			patient_id INT NOT NULL,
+			consent_version VARCHAR(30) NOT NULL DEFAULT 'v1',
+			consent_text LONGTEXT NOT NULL,
+			signature_data LONGTEXT NOT NULL,
+			signed_name VARCHAR(100) DEFAULT '',
+			signed_by_user_id INT DEFAULT 0,
+			signed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+			UNIQUE KEY uk_patient_consent_once (patient_id),
+			KEY idx_patient_consent_signed_at (signed_at)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,
 		`CREATE TABLE IF NOT EXISTS setting_report_position (
 			id INT AUTO_INCREMENT PRIMARY KEY,
 			position_key VARCHAR(50) NOT NULL UNIQUE,
@@ -717,6 +750,8 @@ func EnsureSchema(db *sql.DB, dbName string) error {
 		"signalvalue":         "DOUBLE DEFAULT NULL",
 		"batch_id":            "INT DEFAULT NULL",
 		"model_id":            "INT DEFAULT NULL",
+		"service_mode":        "VARCHAR(20) NOT NULL DEFAULT 'single'",
+		"sale_package_id":     "INT DEFAULT NULL",
 	}
 	for column, definition := range sampleColumns {
 		if err := ensureColumn(db, dbName, "detect_sample", column, definition); err != nil {
@@ -776,9 +811,11 @@ func EnsureSchema(db *sql.DB, dbName string) error {
 		}
 	}
 	reportColumns := map[string]string{
-		"rejected_reason":  "TEXT",
-		"parent_report_id": "INT DEFAULT NULL",
-		"report_role":      "VARCHAR(20) DEFAULT 'single'",
+		"rejected_reason":    "TEXT",
+		"parent_report_id":   "INT DEFAULT NULL",
+		"report_role":        "VARCHAR(20) DEFAULT 'single'",
+		"patient_viewed_at":  "DATETIME DEFAULT NULL",
+		"patient_view_count": "INT NOT NULL DEFAULT 0",
 	}
 	for column, definition := range reportColumns {
 		if err := ensureColumn(db, dbName, "detect_report", column, definition); err != nil {

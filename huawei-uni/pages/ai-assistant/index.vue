@@ -78,6 +78,10 @@
           <text class="select-title">选择报告</text>
           <button @click="showReportSelect = false" class="close-btn">×</button>
         </view>
+        <view class="upload-report-actions">
+          <button class="upload-report-btn" @click="chooseReportImage">上传图片报告</button>
+          <button class="upload-report-btn pdf" @click="chooseReportPDF">上传PDF报告</button>
+        </view>
         <view class="report-list">
           <view v-for="report in reports" :key="getReportKey(report)" @click="toggleReportSelection(report)" class="report-item">
             <view class="report-checkbox">
@@ -387,6 +391,54 @@ export default {
           duration: 1500
         })
       })
+    },
+    chooseReportImage() {
+      if (this.isLoading) return
+      uni.chooseImage({
+        count: 1,
+        sizeType: ['compressed'],
+        sourceType: ['album', 'camera'],
+        success: (result) => {
+          const path = result.tempFilePaths && result.tempFilePaths[0]
+          if (path) this.analyzeUploadedReport(path, '图片报告')
+        }
+      })
+    },
+    chooseReportPDF() {
+      if (this.isLoading) return
+      if (typeof wx === 'undefined' || !wx.chooseMessageFile) {
+        uni.showToast({ title: '当前端不支持选择PDF，请使用微信小程序', icon: 'none' })
+        return
+      }
+      wx.chooseMessageFile({
+        count: 1,
+        type: 'file',
+        extension: ['pdf'],
+        success: (result) => {
+          const file = result.tempFiles && result.tempFiles[0]
+          if (file && file.path) this.analyzeUploadedReport(file.path, file.name || 'PDF报告')
+        }
+      })
+    },
+    async analyzeUploadedReport(filePath, label) {
+      this.showReportSelect = false
+      this.isLoading = true
+      this.isTyping = true
+      this.messages.push({ content: `请分析我上传的${label}`, isUser: true })
+      this.scrollToBottom()
+      try {
+        const response = await aiAPI.analyzeReport({ filePath })
+        this.messages.push({
+          content: response.data && response.data.content ? response.data.content : '未获得分析结果',
+          isUser: false
+        })
+      } catch (error) {
+        this.messages.push({ content: error.message || '报告分析失败，请稍后重试。', isUser: false })
+      } finally {
+        this.isLoading = false
+        this.isTyping = false
+        this.scrollToBottom()
+      }
     },
     toggleReportSelection(report) {
       if (!this.checkLogin()) return
@@ -822,6 +874,9 @@ export default {
   align-items: center;
   margin-bottom: 24rpx;
 }
+.upload-report-actions { display: flex; gap: 16rpx; padding: 18rpx 24rpx; border-bottom: 1rpx solid #eef2f6; }
+.upload-report-btn { flex: 1; height: 68rpx; line-height: 68rpx; margin: 0; padding: 0; border-radius: 12rpx; border: none; background: #1677ff; color: #fff; font-size: 23rpx; }
+.upload-report-btn.pdf { background: #13a8a8; }
 
 .select-title {
   font-size: 28rpx;

@@ -20,6 +20,9 @@ interface AISettings {
   api_url: string;
   model: string;
   prompt: string;
+  report_vision_model: string;
+  report_text_model: string;
+  report_prompt: string;
   configured: boolean;
 }
 
@@ -77,7 +80,10 @@ const AIManagement: React.FC = () => {
           api_url: response.data.api_url,
           api_key: response.data.api_key,
           model: response.data.model,
-          prompt: response.data.prompt
+          prompt: response.data.prompt,
+          report_vision_model: response.data.report_vision_model,
+          report_text_model: response.data.report_text_model,
+          report_prompt: response.data.report_prompt
         });
       } else {
         appMessage.error('获取AI配置信息失败');
@@ -159,7 +165,10 @@ const AIManagement: React.FC = () => {
           api_key: values.api_key,
           api_url: values.api_url,
           model: values.model,
-          prompt: values.prompt
+          prompt: values.prompt,
+          report_vision_model: values.report_vision_model,
+          report_text_model: values.report_text_model,
+          report_prompt: values.report_prompt
         }
       });
 
@@ -363,6 +372,33 @@ const AIManagement: React.FC = () => {
                       rules={[{ required: true, message: '请输入AI接口的Base URL' }]}
                     >
                       <Input prefix={<LinkOutlined style={{ color: '#1890ff' }} />} placeholder="https://qianfan.baidubce.com/v2" />
+                    </Form.Item>
+                  </Col>
+                  <Col xs={24} md={12}>
+                    <Form.Item
+                      name="report_vision_model"
+                      label="图片报告视觉模型"
+                      rules={[{ required: true, message: '请输入图片报告视觉模型' }]}
+                    >
+                      <Input prefix={<AppstoreOutlined />} placeholder="ernie-4.5-turbo-vl-32k" />
+                    </Form.Item>
+                  </Col>
+                  <Col xs={24} md={12}>
+                    <Form.Item
+                      name="report_text_model"
+                      label="PDF 报告文本模型"
+                      rules={[{ required: true, message: '请输入PDF报告文本模型' }]}
+                    >
+                      <Input prefix={<AppstoreOutlined />} placeholder="ernie-lite-pro-128k" />
+                    </Form.Item>
+                  </Col>
+                  <Col span={24}>
+                    <Form.Item
+                      name="report_prompt"
+                      label="上传报告分析提示词"
+                      rules={[{ required: true, message: '请输入报告分析提示词' }]}
+                    >
+                      <Input.TextArea rows={8} placeholder="先识别报告类型，再客观总结，不提供诊断或治疗建议。" />
                     </Form.Item>
                   </Col>
                   
