@@ -1553,6 +1553,14 @@ export async function getReportPositions(options?: { [key: string]: any }) {
   });
 }
 
+export async function listSampleLogistics(params?: any, options?: { [key: string]: any }) {
+  return apiRequest<{ data: { list: any[]; total: number } }>('/api/appointments/samples', {
+    method: 'GET',
+    params: { ...params },
+    ...(options || {}),
+  });
+}
+
 export async function getSystemBootstrap(params?: any, options?: { [key: string]: any }) {
   return apiRequest<{ data: Record<string, any> }>('/api/system/bootstrap', {
     method: 'GET',

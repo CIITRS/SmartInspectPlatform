@@ -14,7 +14,7 @@ import {
   message,
 } from 'antd';
 import { DownloadOutlined, ReloadOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons';
-import { listAppointments, updateAppointment, uploadAppointmentTracking } from '@/services/api';
+import { listAppointments, listSampleLogistics, updateAppointment, uploadAppointmentTracking } from '@/services/api';
 
 const statusMeta: Record<string, { text: string; color: string }> = {
   requested: { text: '待邮寄', color: 'orange' },
@@ -36,6 +36,7 @@ const AppointmentManage: React.FC = () => {
   const [pagination, setPagination] = useState({ current: 1, pageSize: 10, total: 0 });
   const [filters, setFilters] = useState<any>({});
   const [activeStatus, setActiveStatus] = useState('requested');
+  const [activeView, setActiveView] = useState('kits');
   const [currentRecord, setCurrentRecord] = useState<any>(null);
 
   const fetchList = async (extra: any = {}) => {
@@ -43,13 +44,9 @@ const AppointmentManage: React.FC = () => {
     try {
       const current = extra.current || extra.page || pagination.current;
       const pageSize = extra.pageSize || pagination.pageSize;
-      const response = await listAppointments({
-        ...filters,
-        ...extra,
-        status: activeStatus,
-        current,
-        pageSize,
-      });
+      const response = activeView === 'samples'
+        ? await listSampleLogistics({ ...filters, ...extra, current, pageSize })
+        : await listAppointments({ ...filters, ...extra, status: activeStatus, current, pageSize });
       const data = response.data || { list: [], total: 0 };
       setList(data.list || []);
       setPagination({ current, pageSize, total: data.total || 0 });
@@ -62,7 +59,7 @@ const AppointmentManage: React.FC = () => {
 
   useEffect(() => {
     fetchList({ current: 1 });
-  }, [filters, activeStatus]);
+  }, [filters, activeStatus, activeView]);
 
   const openShipModal = (record: any) => {
     setCurrentRecord(record);
@@ -245,11 +242,63 @@ const AppointmentManage: React.FC = () => {
     },
   ];
 
+  const sampleColumns = [
+    {
+      title: '样本',
+      width: 180,
+      render: (_: any, record: any) => (
+        <div>
+          <div>{record.sample_code || '-'}</div>
+          <div style={{ color: '#8c8c8c', fontSize: 12 }}>{record.created_at || '-'}</div>
+        </div>
+      ),
+    },
+    {
+      title: '患者',
+      width: 180,
+      render: (_: any, record: any) => (
+        <div>
+          <div>{record.patient_name || '-'}</div>
+          <div style={{ color: '#8c8c8c', fontSize: 12 }}>{record.patient_code || record.patient_phone || '-'}</div>
+        </div>
+      ),
+    },
+    {
+      title: '当前所在环节',
+      dataIndex: 'current_location',
+      width: 210,
+      render: (value: string) => <Tag color={value?.includes('途中') ? 'processing' : 'blue'}>{value || '待确认'}</Tag>,
+    },
+    {
+      title: '样本状态',
+      dataIndex: 'sample_status',
+      width: 130,
+    },
+    {
+      title: '物流',
+      width: 240,
+      render: (_: any, record: any) => (
+        <div>
+          <div>{record.tracking_number || '暂无运单'}</div>
+          <div style={{ color: '#8c8c8c', fontSize: 12 }}>
+            {[record.express_company, record.latest_event_status].filter(Boolean).join(' · ') || '-'}
+          </div>
+        </div>
+      ),
+    },
+    {
+      title: '签收时间',
+      dataIndex: 'delivered_at',
+      width: 180,
+      render: (value: string) => value || '-',
+    },
+  ];
+
   return (
     <Card
-      title="预约管理"
+      title="物流中心"
       extra={
-        <Space>
+        activeView === 'kits' ? <Space>
           <Button icon={<DownloadOutlined />} onClick={downloadTemplate}>
             下载模板
           </Button>
@@ -266,10 +315,21 @@ const AppointmentManage: React.FC = () => {
               批量上传快递单号
             </Button>
           </Upload>
-        </Space>
+        </Space> : <Button icon={<ReloadOutlined />} onClick={() => fetchList()}>刷新样本位置</Button>
       }
     >
       <Tabs
+        activeKey={activeView}
+        onChange={(key) => {
+          setActiveView(key);
+          setPagination((prev) => ({ ...prev, current: 1 }));
+        }}
+        items={[
+          { key: 'kits', label: '患者试剂盒申请' },
+          { key: 'samples', label: '患者样本位置' },
+        ]}
+      />
+      {activeView === 'kits' && <Tabs
         activeKey={activeStatus}
         onChange={(key) => {
           setActiveStatus(key);
@@ -279,7 +339,7 @@ const AppointmentManage: React.FC = () => {
           { key: 'requested', label: '未寄出' },
           { key: 'shipped', label: '已寄出' },
         ]}
-      />
+      />}
 
       <Form
         form={form}
@@ -314,11 +374,11 @@ const AppointmentManage: React.FC = () => {
       </Form>
 
       <Table
-        columns={columns}
+        columns={activeView === 'samples' ? sampleColumns : columns}
         dataSource={list}
         rowKey="id"
         loading={loading}
-        scroll={{ x: 1320 }}
+        scroll={{ x: activeView === 'samples' ? 1120 : 1320 }}
         pagination={{
           ...pagination,
           showSizeChanger: true,

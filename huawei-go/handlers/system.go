@@ -2711,7 +2711,7 @@ var rolePermissionSeeds = map[string][]defaultPermission{
 		{"announcement", "公告管理", ""}, {"ai-management", "AI管理", ""},
 	},
 	"销售": {
-		{"dashboard", "首页", ""}, {"patient", "患者中心", ""}, {"sales", "销售中心", ""}, {"report", "报告中心", ""}, {"appointment", "预约管理", ""},
+		{"dashboard", "首页", ""}, {"patient", "患者中心", ""}, {"sales", "销售中心", ""}, {"report", "报告中心", ""}, {"appointment", "物流中心", ""},
 	},
 	"检验": {
 		{"dashboard", "首页", ""}, {"patient", "患者中心", ""}, {"sample", "样本中心", ""}, {"result", "结果中心", ""}, {"report", "报告中心", ""},

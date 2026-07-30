@@ -1,257 +1,242 @@
-import React, { useState, useEffect } from 'react';
-import {
-  Card,
-  Form,
-  Input,
-  Select,
-  DatePicker,
-  Button,
-  Table,
-  message,
-  Modal,
-  Space,
-} from 'antd';
-import { EditOutlined } from '@ant-design/icons';
-import { getOrders, getDetectionPlans, updateDetectionPlan } from '@/services/api';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Button, Card, DatePicker, Drawer, Input, Progress, Space, Table, Tag, Typography, message } from 'antd';
+import { CalendarOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
+import { getDetectionPlans, listPatientPackages, updateDetectionPlan } from '@/services/api';
 
-const EditPage: React.FC = () => {
-  const [form] = Form.useForm();
-  const [orders, setOrders] = useState<any[]>([]);
-  const [detectionPlans, setDetectionPlans] = useState<any[]>([]);
-  const [selectedOrder, setSelectedOrder] = useState<number | null>(null);
-  const [editingPlan, setEditingPlan] = useState<any | null>(null);
-  const [editModalVisible, setEditModalVisible] = useState(false);
+const { Text } = Typography;
+
+const orderStatus: Record<string, { text: string; color: string }> = {
+  pending: { text: '待确认', color: 'orange' },
+  pending_config: { text: '待配置', color: 'gold' },
+  active: { text: '进行中', color: 'blue' },
+  completed: { text: '已完成', color: 'green' },
+  cancelled: { text: '已取消', color: 'default' },
+};
+
+const PatientPackageManage: React.FC = () => {
   const [loading, setLoading] = useState(false);
+  const [plansLoading, setPlansLoading] = useState(false);
+  const [orders, setOrders] = useState<any[]>([]);
+  const [plans, setPlans] = useState<any[]>([]);
+  const [current, setCurrent] = useState<any>();
+  const [keyword, setKeyword] = useState('');
+  const [savingID, setSavingID] = useState<number>();
 
-  // 获取订单列表
+  const loadOrders = async () => {
+    setLoading(true);
+    try {
+      const response = await listPatientPackages();
+      setOrders(response.data?.list || []);
+    } catch (error: any) {
+      message.error(error.message || '患者套餐加载失败');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
-    fetchOrders();
+    loadOrders();
   }, []);
 
-  const fetchOrders = async () => {
+  const openPlans = async (record: any) => {
+    setCurrent(record);
+    setPlansLoading(true);
     try {
-      setLoading(true);
-      const response = await getOrders();
-      // 全面处理后端返回的数据格式，确保获取到正确的数组
-      if (response && response.data) {
-        if (Array.isArray((response.data as any).list)) {
-          setOrders((response.data as any).list);
-        } else if (Array.isArray(response.data)) {
-          setOrders(response.data);
-        } else {
-          setOrders([]);
-        }
-      } else {
-        setOrders([]);
-      }
-    } catch (error) {
-      console.error('获取订单列表失败:', error);
-      message.error('获取订单列表失败');
-      setOrders([]);
+      const response = await getDetectionPlans(record.id);
+      setPlans(response.data?.list || []);
+    } catch (error: any) {
+      message.error(error.message || '检测计划加载失败');
     } finally {
-      setLoading(false);
+      setPlansLoading(false);
     }
   };
 
-  // 获取检测计划
-  const fetchDetectionPlans = async (orderId: number) => {
+  const savePlan = async (plan: any, value: dayjs.Dayjs | null) => {
+    if (!value) {
+      message.warning('请选择检测时间');
+      return;
+    }
+    setSavingID(plan.id);
     try {
-      setLoading(true);
-      const response = await getDetectionPlans(orderId);
-      // 全面处理后端返回的数据格式，确保获取到正确的数组
-      if (response && response.data) {
-        if (Array.isArray((response.data as any).list)) {
-          setDetectionPlans((response.data as any).list);
-        } else if (Array.isArray(response.data)) {
-          setDetectionPlans(response.data);
-        } else {
-          setDetectionPlans([]);
-        }
-      } else {
-        setDetectionPlans([]);
-      }
-    } catch (error) {
-      console.error('获取检测计划失败:', error);
-      message.error('获取检测计划失败');
-      setDetectionPlans([]);
+      await updateDetectionPlan({ id: plan.id, detectionDate: value.format('YYYY-MM-DD') });
+      message.success(`第 ${plan.detectionNumber} 次检测时间已保存`);
+      await openPlans(current);
+      await loadOrders();
+    } catch (error: any) {
+      message.error(error.message || '保存失败');
     } finally {
-      setLoading(false);
+      setSavingID(undefined);
     }
   };
 
-  // 选择订单
-  const handleOrderSelect = (orderId: number) => {
-    setSelectedOrder(orderId);
-    fetchDetectionPlans(orderId);
-  };
+  const visibleOrders = useMemo(() => {
+    const value = keyword.trim().toLowerCase();
+    if (!value) return orders;
+    return orders.filter((item) =>
+      [item.patientName, item.patientPhone, item.packageName, item.sale_orderNo, item.cancerTypeName]
+        .some((field) => String(field || '').toLowerCase().includes(value)),
+    );
+  }, [orders, keyword]);
 
-  // 打开编辑模态框
-  const handleEditPlan = (plan: any) => {
-    setEditingPlan(plan);
-    setEditModalVisible(true);
-  };
-
-  // 保存检测计划
-  const handleSavePlan = async (values: any) => {
-    try {
-      setLoading(true);
-      const response = await updateDetectionPlan({
-        id: editingPlan.id,
-        detectionDate: values.detection_date.format('YYYY-MM-DD'),
-      });
-      message.success('保存成功');
-      setEditModalVisible(false);
-      fetchDetectionPlans(selectedOrder!);
-    } catch (error) {
-      message.error('网络错误');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // 订单列
-  const orderColumns = [
+  const columns = [
     {
-      title: '订单编号',
-      dataIndex: 'id',
-      key: 'id',
-    },
-    {
-      title: '患者身份证号',
-      dataIndex: 'detect_patientIdCard',
-      key: 'detect_patientIdCard',
-    },
-    {
-      title: '套餐名称',
-      dataIndex: 'sale_packageName',
-      key: 'sale_packageName',
-    },
-    {
-      title: '癌型',
-      dataIndex: 'cancerTypeName',
-      key: 'cancerTypeName',
-    },
-    {
-      title: '购买日期',
-      dataIndex: 'created_at',
-      key: 'created_at',
-      render: (text: string) => dayjs(text).format('YYYY-MM-DD'),
-    },
-    {
-      title: '操作',
-      key: 'action',
-      render: (_: any, record: any) => (
-        <Button
-          type="primary"
-          onClick={() => handleOrderSelect(record.id)}
-        >
-          查看检测计划
-        </Button>
+      title: '患者',
+      width: 180,
+      render: (_: any, row: any) => (
+        <div>
+          <div>{row.patientName || '-'}</div>
+          <Text type="secondary">{row.patientPhone || '-'}</Text>
+        </div>
       ),
     },
-  ];
-
-  // 检测计划列
-  const planColumns = [
     {
-      title: '序号',
-      dataIndex: 'detectionNumber',
-      key: 'detectionNumber',
+      title: '套餐',
+      width: 190,
+      render: (_: any, row: any) => (
+        <div>
+          <div>{row.packageName || '-'}</div>
+          <Text type="secondary">{row.cancerTypeName || '未配置癌型'}</Text>
+        </div>
+      ),
     },
     {
-      title: '检测日期',
-      dataIndex: 'detectionDate',
-      key: 'detectionDate',
-      render: (text: string) => dayjs(text).format('YYYY-MM-DD'),
+      title: '首次扫码时间',
+      dataIndex: 'firstScanAt',
+      width: 180,
+      render: (value: string) => value || <Text type="secondary">尚未扫码</Text>,
+    },
+    {
+      title: '检测计划',
+      width: 190,
+      render: (_: any, row: any) => {
+        const total = row.planCount || 0;
+        const configured = row.configuredCount || 0;
+        return (
+          <div style={{ minWidth: 150 }}>
+            <Progress percent={total ? Math.round((configured / total) * 100) : 0} size="small" showInfo={false} />
+            <Text type="secondary">已配置 {configured}/{total} 次</Text>
+          </div>
+        );
+      },
     },
     {
       title: '状态',
       dataIndex: 'status',
-      key: 'status',
-      render: (status: string) => {
-        const statusMap: { [key: string]: string } = {
-          'pending': '待检测',
-          'completed': '已完成',
-          'canceled': '已取消',
-        };
-        return statusMap[status] || status;
+      width: 100,
+      render: (value: string) => {
+        const meta = orderStatus[value] || { text: value || '-', color: 'default' };
+        return <Tag color={meta.color}>{meta.text}</Tag>;
       },
     },
     {
+      title: '销售',
+      dataIndex: 'salesPersonName',
+      width: 120,
+      render: (value: string) => value || '待分配',
+    },
+    {
       title: '操作',
-      key: 'action',
-      render: (_: any, record: any) => (
-        <Button
-          icon={<EditOutlined />}
-          onClick={() => handleEditPlan(record)}
-        >
-          编辑
+      width: 130,
+      fixed: 'right' as const,
+      render: (_: any, row: any) => (
+        <Button type="link" icon={<CalendarOutlined />} onClick={() => openPlans(row)}>
+          配置时间
         </Button>
       ),
     },
   ];
 
   return (
-    <div className="sales-edit-page">
-      <Card title="个性化编辑" className="mb-4">
-        <h3 className="mb-4">选择订单</h3>
+    <>
+      <Card
+        title="患者套餐管理"
+        extra={<Button icon={<ReloadOutlined />} onClick={loadOrders}>刷新</Button>}
+      >
+        <Space style={{ marginBottom: 16 }}>
+          <Input
+            allowClear
+            value={keyword}
+            onChange={(event) => setKeyword(event.target.value)}
+            prefix={<SearchOutlined />}
+            placeholder="患者、电话、套餐、癌型"
+            style={{ width: 320 }}
+          />
+          <Text type="secondary">患者提交套餐后，由所属销售配置每一次检测时间；付款在线下完成。</Text>
+        </Space>
         <Table
-          columns={orderColumns}
-          dataSource={orders}
           rowKey="id"
+          columns={columns}
+          dataSource={visibleOrders}
           loading={loading}
-          pagination={{ pageSize: 10 }}
+          scroll={{ x: 1120 }}
+          pagination={{ pageSize: 10, showTotal: (total) => `共 ${total} 个患者套餐` }}
         />
       </Card>
 
-      {selectedOrder && (
-        <Card title="检测计划编辑" className="mb-4">
-          <Table
-            columns={planColumns}
-            dataSource={detectionPlans}
-            rowKey="id"
-            loading={loading}
-            pagination={{ pageSize: 10 }}
-          />
-        </Card>
-      )}
-
-      {/* 编辑检测计划模态框 */}
-      <Modal
-        title="编辑检测计划"
-        open={editModalVisible}
-        onCancel={() => setEditModalVisible(false)}
-        footer={null}
+      <Drawer
+        width={620}
+        open={!!current}
+        title={`${current?.patientName || ''} · ${current?.packageName || ''}`}
+        onClose={() => {
+          setCurrent(undefined);
+          setPlans([]);
+        }}
       >
-        <Form
-          form={form}
-          initialValues={{
-            detection_date: editingPlan ? dayjs(editingPlan.detectionDate) : null,
-          }}
-          onFinish={handleSavePlan}
-        >
-          <Form.Item
-            name="detection_date"
-            label="检测日期"
-            rules={[{ required: true, message: '请选择检测日期' }]}
-          >
-            <DatePicker style={{ width: '100%' }} />
-          </Form.Item>
-          <Form.Item>
-            <Space style={{ width: '100%', justifyContent: 'flex-end' }}>
-              <Button onClick={() => setEditModalVisible(false)}>
-                取消
-              </Button>
-              <Button type="primary" htmlType="submit" loading={loading}>
-                保存
-              </Button>
-            </Space>
-          </Form.Item>
-        </Form>
-      </Modal>
-    </div>
+        <Card size="small" style={{ marginBottom: 16 }}>
+          <Space direction="vertical" size={4}>
+            <Text>订单：{current?.sale_orderNo || '-'}</Text>
+            <Text>癌型：{current?.cancerTypeName || '-'}</Text>
+            <Text strong>第一次扫码时间：{current?.firstScanAt || '尚未扫码'}</Text>
+          </Space>
+        </Card>
+        <Table
+          rowKey="id"
+          loading={plansLoading}
+          pagination={false}
+          dataSource={plans}
+          columns={[
+            {
+              title: '检测次数',
+              dataIndex: 'detectionNumber',
+              width: 100,
+              render: (value) => `第 ${value} 次`,
+            },
+            {
+              title: '时间',
+              render: (_: any, plan: any) => (
+                <DatePicker
+                  defaultValue={plan.detectionDate ? dayjs(plan.detectionDate) : null}
+                  disabled={plan.detectionNumber === 1 && !!plan.firstScanAt}
+                  placeholder={plan.detectionNumber === 1 && plan.firstScanAt ? plan.firstScanAt : '选择检测日期'}
+                  onChange={(value) => { plan.pendingDate = value; }}
+                  style={{ width: '100%' }}
+                />
+              ),
+            },
+            {
+              title: '操作',
+              width: 90,
+              render: (_: any, plan: any) => (
+                plan.detectionNumber === 1 && plan.firstScanAt
+                  ? <Tag color="green">扫码已记录</Tag>
+                  : (
+                    <Button
+                      type="primary"
+                      size="small"
+                      loading={savingID === plan.id}
+                      onClick={() => savePlan(plan, plan.pendingDate || (plan.detectionDate ? dayjs(plan.detectionDate) : null))}
+                    >
+                      保存
+                    </Button>
+                  )
+              ),
+            },
+          ]}
+        />
+      </Drawer>
+    </>
   );
 };
 
-export default EditPage;
+export default PatientPackageManage;

@@ -1,209 +1,54 @@
-import React, { useState, useEffect } from 'react';
-import {
-  Card,
-  Table,
-  message,
-  DatePicker,
-  Select,
-  Button,
-  Space,
-  Row,
-  Col,
-  Statistic,
-} from 'antd';
+import React, { useEffect, useState } from 'react';
+import { Button, Card, Col, Row, Statistic, Table, Typography, message } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
-import { getSalesStatistics, getUserInfo } from '@/services/api';
-import dayjs from 'dayjs';
+import { getSalesStatistics } from '@/services/api';
 
-const { Option } = Select;
-const { RangePicker } = DatePicker;
-
-const StatisticsPage: React.FC = () => {
-  const [statistics, setStatistics] = useState<any[]>([]);
-  const [userStatistics, setUserStatistics] = useState<any>(null);
-  const [allStatistics, setAllStatistics] = useState<any>(null);
+const SalesStatistics: React.FC = () => {
   const [loading, setLoading] = useState(false);
-  const [userInfo, setUserInfo] = useState<any>(null);
-  const [dateRange, setDateRange] = useState<[dayjs.Dayjs, dayjs.Dayjs] | null>(null);
+  const [data, setData] = useState<any>({ list: [] });
 
-  // 获取用户信息
-  useEffect(() => {
-    fetchUserInfo();
-  }, []);
-
-  // 获取销售统计
-  useEffect(() => {
-    if (userInfo) {
-      fetchSalesStatistics();
-    }
-  }, [userInfo, dateRange]);
-
-  const fetchUserInfo = async () => {
+  const load = async () => {
+    setLoading(true);
     try {
-      const response = await getUserInfo();
-      if (response.data) {
-        setUserInfo(response.data);
-      } else {
-        message.error('获取用户信息失败');
-      }
-    } catch (error) {
-      message.error('网络错误');
-    }
-  };
-
-  const fetchSalesStatistics = async () => {
-    try {
-      setLoading(true);
-      const params: any = {};
-      if (dateRange) {
-        params.start_date = dateRange[0].format('YYYY-MM-DD');
-        params.end_date = dateRange[1].format('YYYY-MM-DD');
-      }
-      const response = await getSalesStatistics(params);
-      if (response.data) {
-        setStatistics(response.data.details || []);
-        setUserStatistics(response.data.user_statistics || null);
-        setAllStatistics(response.data.all_statistics || null);
-      } else {
-        message.error('获取销售统计失败');
-      }
-    } catch (error) {
-      message.error('网络错误');
+      const response = await getSalesStatistics();
+      setData(response.data || { list: [] });
+    } catch (error: any) {
+      message.error(error.message || '销售统计加载失败');
     } finally {
       setLoading(false);
     }
   };
 
-  // 处理日期范围变化
-  const handleDateRangeChange = (dates: any, dateStrings: [string, string]) => {
-    setDateRange(dates);
-  };
-
-  // 处理刷新
-  const handleRefresh = () => {
-    fetchSalesStatistics();
-  };
-
-  // 销售统计列
-  const columns = [
-    {
-      title: '销售人',
-      dataIndex: 'salesperson_name',
-      key: 'salesperson_name',
-    },
-    {
-      title: '套餐数',
-      dataIndex: 'package_count',
-      key: 'package_count',
-    },
-    {
-      title: '总金额',
-      dataIndex: 'total_amount',
-      key: 'total_amount',
-      render: (text: number) => `¥${text.toFixed(2)}`,
-    },
-    {
-      title: '销售日期',
-      dataIndex: 'date',
-      key: 'date',
-    },
-  ];
+  useEffect(() => {
+    load();
+  }, []);
 
   return (
-    <div className="sales-statistics-page">
-      <Card title="销售统计" className="mb-4">
-        <Row gutter={16} className="mb-4">
-          <Col span={12}>
-            <Space>
-              <RangePicker
-                onChange={handleDateRangeChange}
-                placeholder={['开始日期', '结束日期']}
-              />
-              <Button
-                type="primary"
-                icon={<ReloadOutlined />}
-                onClick={handleRefresh}
-                loading={loading}
-              >
-                刷新
-              </Button>
-            </Space>
-          </Col>
-        </Row>
-
-        {/* 个人销售统计 */}
-        {userStatistics && (
-          <Card title="个人销售统计" className="mb-4">
-            <Row gutter={16}>
-              <Col span={8}>
-                <Statistic
-                  title="销售套餐数"
-                  value={userStatistics.package_count}
-                  prefix="📦"
-                />
-              </Col>
-              <Col span={8}>
-                <Statistic
-                  title="销售总金额"
-                  value={userStatistics.total_amount}
-                  prefix="¥"
-                  precision={2}
-                />
-              </Col>
-              <Col span={8}>
-                <Statistic
-                  title="销售订单数"
-                  value={userStatistics.order_count}
-                  prefix="📋"
-                />
-              </Col>
-            </Row>
-          </Card>
-        )}
-
-        {/* 管理员看到的总统计 */}
-        {allStatistics && userInfo?.role === 'admin' && (
-          <Card title="总销售统计" className="mb-4">
-            <Row gutter={16}>
-              <Col span={8}>
-                <Statistic
-                  title="总销售套餐数"
-                  value={allStatistics.total_package_count}
-                  prefix="📦"
-                />
-              </Col>
-              <Col span={8}>
-                <Statistic
-                  title="总销售金额"
-                  value={allStatistics.total_amount}
-                  prefix="¥"
-                  precision={2}
-                />
-              </Col>
-              <Col span={8}>
-                <Statistic
-                  title="总销售订单数"
-                  value={allStatistics.total_order_count}
-                  prefix="📋"
-                />
-              </Col>
-            </Row>
-          </Card>
-        )}
-
-        {/* 销售详情 */}
-        <Card title={userInfo?.role === 'admin' ? '所有销售详情' : '个人销售详情'}>
-          <Table
-            columns={columns}
-            dataSource={statistics}
-            rowKey="id"
-            loading={loading}
-            pagination={{ pageSize: 10 }}
-          />
-        </Card>
-      </Card>
-    </div>
+    <Card title="销售统计" extra={<Button icon={<ReloadOutlined />} onClick={load}>刷新</Button>}>
+      <Typography.Paragraph type="secondary">
+        付款在线下完成，本页只统计患者、套餐与配置进度，不统计线上金额。
+      </Typography.Paragraph>
+      <Row gutter={16} style={{ marginBottom: 20 }}>
+        <Col xs={24} md={6}><Card size="small"><Statistic title="套餐总数" value={data.totalOrderCount || 0} /></Card></Col>
+        <Col xs={24} md={6}><Card size="small"><Statistic title="待配置" value={data.totalPendingCount || 0} /></Card></Col>
+        <Col xs={24} md={6}><Card size="small"><Statistic title="进行中" value={data.totalActiveCount || 0} /></Card></Col>
+        <Col xs={24} md={6}><Card size="small"><Statistic title="服务患者数" value={data.totalPatientCount || 0} /></Card></Col>
+      </Row>
+      <Table
+        rowKey="salesPersonId"
+        loading={loading}
+        dataSource={data.list || []}
+        pagination={false}
+        columns={[
+          { title: '销售人员', dataIndex: 'salesPersonName' },
+          { title: '服务患者数', dataIndex: 'patientCount' },
+          { title: '套餐数', dataIndex: 'sale_orderCount' },
+          { title: '待配置', dataIndex: 'pendingConfigCount' },
+          { title: '进行中', dataIndex: 'activeCount' },
+        ]}
+      />
+    </Card>
   );
 };
 
-export default StatisticsPage;
+export default SalesStatistics;

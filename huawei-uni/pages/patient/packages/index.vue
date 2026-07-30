@@ -2,7 +2,8 @@
   <view class="page">
     <view class="page-header">
       <text class="page-title">我的套餐</text>
-      <text class="page-desc">查看购买套餐、下一次预计检测时间和采样盒预约</text>
+      <text class="page-desc">提交套餐申请，并查看客户经理配置的每一次检测时间</text>
+      <button class="apply-btn" @click="openApply">申请套餐</button>
     </view>
 
     <view v-if="loading" class="state-box">
@@ -10,9 +11,9 @@
     </view>
 
     <view v-else-if="packages.length === 0" class="state-box">
-      <text class="empty-icon">📋</text>
+      <text class="empty-icon">—</text>
       <text class="state-title">暂无套餐</text>
-      <text class="state-text">购买套餐后会在这里显示检测计划</text>
+      <text class="state-text">提交套餐后会在这里显示检测计划</text>
     </view>
 
     <view v-else class="package-list">
@@ -40,24 +41,54 @@
             <text class="meta-value">{{ item.interval_days }} 天</text>
           </view>
           <view class="meta-item">
-            <text class="meta-label">付款状态</text>
-            <text class="meta-value">{{ paymentText(item.payment_status) }}</text>
+            <text class="meta-label">提交时间</text>
+            <text class="meta-value">{{ item.created_at || '-' }}</text>
           </view>
           <view class="meta-item">
-            <text class="meta-label">购买时间</text>
-            <text class="meta-value">{{ item.created_at || '-' }}</text>
+            <text class="meta-label">第一次扫码</text>
+            <text class="meta-value">{{ item.first_scan_at || '尚未扫码' }}</text>
           </view>
         </view>
 
         <view class="plans">
           <view v-for="plan in item.plans" :key="plan.id" class="plan-row">
             <text class="plan-index">第 {{ plan.detection_number }} 次</text>
-            <text class="plan-date">{{ plan.detection_date || '待确定' }}</text>
+            <text class="plan-date">{{ plan.detection_number === 1 && plan.first_scan_at ? plan.first_scan_at : (plan.detection_date || '待销售配置') }}</text>
             <text class="plan-status">{{ planStatusText(plan.status) }}</text>
           </view>
         </view>
 
         <button class="box-btn" @click="openBoxForm(item)">预约邮寄采样盒</button>
+      </view>
+    </view>
+
+    <view v-if="showApplyForm" class="mask" @click="closeApply">
+      <view class="form-panel" @click.stop>
+        <view class="form-head">
+          <text class="form-title">申请患者套餐</text>
+          <text class="close" @click="closeApply">×</text>
+        </view>
+        <view class="form-body">
+          <view class="form-item">
+            <text class="form-label">检测套餐</text>
+            <picker :range="packageOptions" range-key="name" @change="onPackageChange">
+              <view class="date-picker">{{ selectedPackageName || '请选择套餐' }}</view>
+            </picker>
+          </view>
+          <view class="form-item">
+            <text class="form-label">癌型</text>
+            <picker :range="cancerTypes" range-key="name" @change="onCancerChange">
+              <view class="date-picker">{{ selectedCancerName || '请选择癌型' }}</view>
+            </picker>
+          </view>
+          <text class="apply-tip">付款在线下完成；提交后由客户经理配置每一次检测时间。</text>
+        </view>
+        <view class="form-actions">
+          <button class="cancel-btn" @click="closeApply">取消</button>
+          <button class="submit-btn" :disabled="submitting" @click="submitPackageApplication">
+            {{ submitting ? '提交中...' : '提交申请' }}
+          </button>
+        </view>
       </view>
     </view>
 
@@ -112,7 +143,14 @@ export default {
       submitting: false,
       packages: [],
       showBoxForm: false,
+      showApplyForm: false,
       currentPackage: null,
+      packageOptions: [],
+      cancerTypes: [],
+      selectedPackageId: 0,
+      selectedPackageName: '',
+      selectedCancerId: 0,
+      selectedCancerName: '',
       boxForm: {
         receiver_name: '',
         receiver_phone: '',
@@ -146,13 +184,56 @@ export default {
       const map = { pending: '待确认', active: '进行中', completed: '已完成', cancelled: '已取消' }
       return map[status] || status || '-'
     },
-    paymentText(status) {
-      const map = { pending: '待支付', paid: '已支付', refunded: '已退款' }
-      return map[status] || status || '-'
-    },
     planStatusText(status) {
       const map = { scheduled: '待检测', completed: '已完成', cancelled: '已取消' }
       return map[status] || status || '-'
+    },
+    async openApply() {
+      this.showApplyForm = true
+      try {
+        const res = await uniAPI.getPackageOptions()
+        this.packageOptions = res.data?.packages || []
+        this.cancerTypes = res.data?.cancer_types || []
+      } catch (e) {
+        uni.showToast({ title: '套餐选项加载失败', icon: 'none' })
+      }
+    },
+    closeApply() {
+      this.showApplyForm = false
+    },
+    onPackageChange(e) {
+      const item = this.packageOptions[Number(e.detail.value)]
+      this.selectedPackageId = item?.id || 0
+      this.selectedPackageName = item?.name || ''
+    },
+    onCancerChange(e) {
+      const item = this.cancerTypes[Number(e.detail.value)]
+      this.selectedCancerId = item?.id || 0
+      this.selectedCancerName = item?.name || ''
+    },
+    async submitPackageApplication() {
+      if (!this.selectedPackageId || !this.selectedCancerId) {
+        uni.showToast({ title: '请选择套餐和癌型', icon: 'none' })
+        return
+      }
+      this.submitting = true
+      try {
+        const res = await uniAPI.applyPackage({
+          package_id: this.selectedPackageId,
+          cancer_type_id: this.selectedCancerId
+        })
+        if (res.success) {
+          uni.showToast({ title: '申请已提交', icon: 'success' })
+          this.closeApply()
+          this.loadPackages()
+        } else {
+          uni.showToast({ title: res.message || '提交失败', icon: 'none' })
+        }
+      } catch (e) {
+        uni.showToast({ title: e.message || '提交失败', icon: 'none' })
+      } finally {
+        this.submitting = false
+      }
     },
     openBoxForm(item) {
       this.currentPackage = item
@@ -206,6 +287,8 @@ export default {
 .page-header { margin-bottom: 28rpx; }
 .page-title { display: block; font-size: 36rpx; font-weight: 700; color: #1f2d3d; margin-bottom: 8rpx; }
 .page-desc { display: block; font-size: 24rpx; color: #8c9aa8; line-height: 1.5; }
+.apply-btn { margin: 22rpx 0 0; width: 220rpx; height: 70rpx; line-height: 70rpx; border: none; border-radius: 12rpx; background: #1677ff; color: #fff; font-size: 26rpx; }
+.apply-btn::after { border: none; }
 .state-box { display: flex; flex-direction: column; align-items: center; padding: 120rpx 0; }
 .empty-icon { font-size: 72rpx; margin-bottom: 20rpx; }
 .state-title { font-size: 28rpx; color: #1f2d3d; font-weight: 600; margin-bottom: 8rpx; }
@@ -239,6 +322,7 @@ export default {
 .form-label { display: block; font-size: 24rpx; color: #8c9aa8; margin-bottom: 12rpx; }
 .form-input, .date-picker { width: 100%; min-height: 72rpx; line-height: 72rpx; padding: 0 20rpx; border: 2rpx solid #e5e7eb; border-radius: 12rpx; background: #f9fafb; box-sizing: border-box; font-size: 26rpx; color: #1f2d3d; }
 .form-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 18rpx; padding: 24rpx 32rpx 36rpx; }
+.apply-tip { display: block; padding: 22rpx 0 8rpx; color: #64748b; font-size: 23rpx; line-height: 1.6; }
 .cancel-btn, .submit-btn { height: 78rpx; line-height: 78rpx; border-radius: 12rpx; font-size: 28rpx; }
 .cancel-btn { background: #fff; color: #1677ff; border: 2rpx solid #1677ff; }
 .submit-btn { background: #1677ff; color: #fff; border: none; }

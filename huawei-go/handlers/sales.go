@@ -48,6 +48,21 @@ func requireSalesAssignmentAdmin(c *app.RequestContext, db *sql.DB) bool {
 	return true
 }
 
+func canManageSaleOrder(c *app.RequestContext, db *sql.DB, orderID int) bool {
+	userID, roleName, err := getCurrentRoleName(db, c)
+	if err != nil {
+		return false
+	}
+	if isAdminRoleName(roleName) {
+		return true
+	}
+	var ownerID sql.NullInt64
+	if err := db.QueryRow(`SELECT sales_person_id FROM sale_order WHERE id = ?`, orderID).Scan(&ownerID); err != nil {
+		return false
+	}
+	return ownerID.Valid && int(ownerID.Int64) == userID
+}
+
 // HandleListSalesAssignmentPatients 查询自主注册且尚未分配销售的患者。
 func HandleListSalesAssignmentPatients(c *app.RequestContext, db *sql.DB) {
 	if !requireSalesAssignmentAdmin(c, db) {
@@ -398,8 +413,12 @@ func HandleListPatientPackages(c *app.RequestContext, db *sql.DB) {
 		LEFT JOIN setting_role r ON u.role_id = r.id WHERE u.id = ?`, userID).Scan(&roleName)
 
 	query := `SELECT o.id, o.sale_order_no, o.detect_patient_id, COALESCE(p.name, ''), COALESCE(p.phone, ''),
-		o.sale_package_id, COALESCE(pk.name, ''), o.setting_cancer_type_id, COALESCE(ct.name, ''),
-		o.first_detection_date, o.payment_status, o.status, o.sales_person_id, COALESCE(u.real_name, u.username), o.created_at
+		o.sale_package_id, COALESCE(pk.name, ''), COALESCE(o.setting_cancer_type_id, 0), COALESCE(ct.name, ''),
+		o.first_detection_date, o.payment_status, o.status, COALESCE(o.sales_person_id, 0), COALESCE(u.real_name, u.username, ''), o.created_at,
+		(SELECT MIN(ds.sample_created_at) FROM detect_sample ds
+		 WHERE ds.patient_id = o.detect_patient_id AND ds.sale_package_id = o.sale_package_id) AS first_scan_at,
+		(SELECT COUNT(*) FROM sale_detection_plan dp WHERE dp.sale_order_id = o.id) AS plan_count,
+		(SELECT COUNT(*) FROM sale_detection_plan dp WHERE dp.sale_order_id = o.id AND dp.detection_date IS NOT NULL) AS configured_count
 		FROM sale_order o
 		LEFT JOIN detect_patient p ON o.detect_patient_id = p.id
 		LEFT JOIN sale_package pk ON o.sale_package_id = pk.id
@@ -426,11 +445,13 @@ func HandleListPatientPackages(c *app.RequestContext, db *sql.DB) {
 		var orderNo, patientName, patientPhone, packageName, cancerTypeName, paymentStatus, status, salesPersonName string
 		var firstDate sql.NullString
 		var createdAt time.Time
-		if err := rows.Scan(&id, &orderNo, &patientID, &patientName, &patientPhone, &packageID, &packageName, &cancerTypeID, &cancerTypeName, &firstDate, &paymentStatus, &status, &salesPersonID, &salesPersonName, &createdAt); err != nil {
+		var firstScanAt sql.NullTime
+		var planCount, configuredCount int
+		if err := rows.Scan(&id, &orderNo, &patientID, &patientName, &patientPhone, &packageID, &packageName, &cancerTypeID, &cancerTypeName, &firstDate, &paymentStatus, &status, &salesPersonID, &salesPersonName, &createdAt, &firstScanAt, &planCount, &configuredCount); err != nil {
 			log.Printf("Failed to scan patient package: %v", err)
 			continue
 		}
-		list = append(list, utils.H{
+		item := utils.H{
 			"id":                 id,
 			"sale_orderNo":       orderNo,
 			"patientId":          patientID,
@@ -446,7 +467,13 @@ func HandleListPatientPackages(c *app.RequestContext, db *sql.DB) {
 			"salesPersonId":      salesPersonID,
 			"salesPersonName":    salesPersonName,
 			"createdAt":          createdAt,
-		})
+			"planCount":          planCount,
+			"configuredCount":    configuredCount,
+		}
+		if firstScanAt.Valid {
+			item["firstScanAt"] = firstScanAt.Time.Format("2006-01-02 15:04:05")
+		}
+		list = append(list, item)
 	}
 	c.JSON(consts.StatusOK, ApiResponse{Code: 200, Success: true, Message: "获取绑定套餐成功", Data: utils.H{"list": list, "total": len(list)}})
 }
@@ -888,8 +915,18 @@ func HandleListDetectionPlans(c *app.RequestContext, db *sql.DB) {
 		})
 		return
 	}
+	if !canManageSaleOrder(c, db, sale_orderId) {
+		c.JSON(consts.StatusForbidden, ApiResponse{Code: 403, Success: false, Message: "无权查看该患者套餐", Data: nil})
+		return
+	}
 
 	// 查询检测计划
+	var firstScanAt sql.NullTime
+	_ = db.QueryRow(`SELECT MIN(ds.sample_created_at)
+		FROM sale_order o
+		JOIN detect_sample ds ON ds.patient_id = o.detect_patient_id AND ds.sale_package_id = o.sale_package_id
+		WHERE o.id = ?`, sale_orderId).Scan(&firstScanAt)
+
 	rows, err := db.Query(`SELECT id, sale_order_id, detect_patient_id, detection_date, detection_number, status, created_at, updated_at FROM sale_detection_plan WHERE sale_order_id = ? ORDER BY detection_number`, sale_orderId)
 	if err != nil {
 		log.Printf("Failed to query detection plans: %v", err)
@@ -907,7 +944,8 @@ func HandleListDetectionPlans(c *app.RequestContext, db *sql.DB) {
 	var plans []utils.H
 	for rows.Next() {
 		var id, sale_orderId, detect_patientId, detectionNumber int
-		var detectionDate, status string
+		var detectionDate sql.NullTime
+		var status string
 		var createdAt, updatedAt time.Time
 
 		err := rows.Scan(&id, &sale_orderId, &detect_patientId, &detectionDate, &detectionNumber, &status, &createdAt, &updatedAt)
@@ -920,12 +958,23 @@ func HandleListDetectionPlans(c *app.RequestContext, db *sql.DB) {
 			"id":               id,
 			"sale_orderId":     sale_orderId,
 			"detect_patientId": detect_patientId,
-			"detectionDate":    detectionDate,
+			"detectionDate":    "",
 			"detectionNumber":  detectionNumber,
 			"status":           status,
 			"createdAt":        createdAt,
 			"updatedAt":        updatedAt,
 		})
+		plan := plans[len(plans)-1]
+		if detectionDate.Valid {
+			plan["detectionDate"] = detectionDate.Time.Format("2006-01-02")
+		}
+		if detectionNumber == 1 && firstScanAt.Valid {
+			plan["firstScanAt"] = firstScanAt.Time.Format("2006-01-02 15:04:05")
+			plan["displayDate"] = firstScanAt.Time.Format("2006-01-02 15:04:05")
+		} else if detectionDate.Valid {
+			plan["displayDate"] = detectionDate.Time.Format("2006-01-02")
+		}
+		plans[len(plans)-1] = plan
 	}
 
 	c.JSON(consts.StatusOK, ApiResponse{
@@ -948,6 +997,11 @@ func HandleUpdateDetectionPlan(c *app.RequestContext, db *sql.DB) {
 			Message: "无效的检测计划ID",
 			Data:    nil,
 		})
+		return
+	}
+	var orderID int
+	if err := db.QueryRow(`SELECT sale_order_id FROM sale_detection_plan WHERE id = ?`, id).Scan(&orderID); err != nil || !canManageSaleOrder(c, db, orderID) {
+		c.JSON(consts.StatusForbidden, ApiResponse{Code: 403, Success: false, Message: "无权修改该患者套餐", Data: nil})
 		return
 	}
 
@@ -991,6 +1045,18 @@ func HandleUpdateDetectionPlan(c *app.RequestContext, db *sql.DB) {
 		})
 		return
 	}
+	_, _ = db.Exec(`UPDATE sale_order o
+		JOIN sale_detection_plan changed ON changed.sale_order_id = o.id
+		SET o.first_detection_date = CASE WHEN changed.detection_number = 1 THEN changed.detection_date ELSE o.first_detection_date END,
+			o.status = CASE
+				WHEN NOT EXISTS (
+					SELECT 1 FROM sale_detection_plan pending
+					WHERE pending.sale_order_id = o.id AND pending.detection_date IS NULL
+				) THEN 'active'
+				ELSE 'pending_config'
+			END,
+			o.updated_at = NOW()
+		WHERE changed.id = ?`, id)
 
 	c.JSON(consts.StatusOK, ApiResponse{
 		Code:    200,
@@ -1031,16 +1097,29 @@ func HandleGetSalesStatistics(c *app.RequestContext, db *sql.DB) {
 		return
 	}
 
-	// 构建查询语句
+	// 付款在线下完成，这里只统计业务数量和进度，不读取或汇总金额。
 	var query string
 	var args []interface{}
 
 	if isAdminRoleName(roleName) {
 		// 管理员可以查看所有销售统计
-		query = "SELECT su.id as salesPersonId, su.username as salesPersonName, COUNT(o.id) as sale_orderCount, SUM(o.total_amount) as totalAmount FROM `sale_order` o JOIN base_manage_user su ON o.sales_person_id = su.id WHERE o.status != 'cancelled' GROUP BY su.id, su.username ORDER BY totalAmount DESC"
+		query = `SELECT su.id, COALESCE(su.real_name, su.username), COUNT(o.id),
+			SUM(CASE WHEN o.status IN ('pending', 'pending_config') THEN 1 ELSE 0 END),
+			SUM(CASE WHEN o.status = 'active' THEN 1 ELSE 0 END),
+			COUNT(DISTINCT o.detect_patient_id)
+			FROM sale_order o JOIN base_manage_user su ON o.sales_person_id = su.id
+			WHERE o.status != 'cancelled'
+			GROUP BY su.id, COALESCE(su.real_name, su.username)
+			ORDER BY COUNT(o.id) DESC`
 	} else {
 		// 销售人员只能查看自己的销售统计
-		query = "SELECT su.id as salesPersonId, su.username as salesPersonName, COUNT(o.id) as sale_orderCount, SUM(o.total_amount) as totalAmount FROM `sale_order` o JOIN base_manage_user su ON o.sales_person_id = su.id WHERE o.sales_person_id = ? AND o.status != 'cancelled' GROUP BY su.id, su.username"
+		query = `SELECT su.id, COALESCE(su.real_name, su.username), COUNT(o.id),
+			SUM(CASE WHEN o.status IN ('pending', 'pending_config') THEN 1 ELSE 0 END),
+			SUM(CASE WHEN o.status = 'active' THEN 1 ELSE 0 END),
+			COUNT(DISTINCT o.detect_patient_id)
+			FROM sale_order o JOIN base_manage_user su ON o.sales_person_id = su.id
+			WHERE o.sales_person_id = ? AND o.status != 'cancelled'
+			GROUP BY su.id, COALESCE(su.real_name, su.username)`
 		args = append(args, userID)
 	}
 
@@ -1061,29 +1140,33 @@ func HandleGetSalesStatistics(c *app.RequestContext, db *sql.DB) {
 	// 遍历查询结果
 	var statistics []utils.H
 	var totalOrderCount int
-	var totalSalesAmount float64
+	var totalPendingCount, totalActiveCount, totalPatientCount int
 
 	for rows.Next() {
 		var salesPersonId int
 		var salesPersonName string
 		var sale_orderCount int
-		var totalAmount float64
+		var pendingCount, activeCount, patientCount int
 
-		err := rows.Scan(&salesPersonId, &salesPersonName, &sale_orderCount, &totalAmount)
+		err := rows.Scan(&salesPersonId, &salesPersonName, &sale_orderCount, &pendingCount, &activeCount, &patientCount)
 		if err != nil {
 			log.Printf("Failed to scan sales statistics: %v", err)
 			continue
 		}
 
 		statistics = append(statistics, utils.H{
-			"salesPersonId":   salesPersonId,
-			"salesPersonName": salesPersonName,
-			"sale_orderCount": sale_orderCount,
-			"totalAmount":     totalAmount,
+			"salesPersonId":      salesPersonId,
+			"salesPersonName":    salesPersonName,
+			"sale_orderCount":    sale_orderCount,
+			"pendingConfigCount": pendingCount,
+			"activeCount":        activeCount,
+			"patientCount":       patientCount,
 		})
 
 		totalOrderCount += sale_orderCount
-		totalSalesAmount += totalAmount
+		totalPendingCount += pendingCount
+		totalActiveCount += activeCount
+		totalPatientCount += patientCount
 	}
 
 	c.JSON(consts.StatusOK, ApiResponse{
@@ -1091,10 +1174,12 @@ func HandleGetSalesStatistics(c *app.RequestContext, db *sql.DB) {
 		Success: true,
 		Message: "获取销售统计成功",
 		Data: utils.H{
-			"list":             statistics,
-			"total":            len(statistics),
-			"totalOrderCount":  totalOrderCount,
-			"totalSalesAmount": totalSalesAmount,
+			"list":              statistics,
+			"total":             len(statistics),
+			"totalOrderCount":   totalOrderCount,
+			"totalPendingCount": totalPendingCount,
+			"totalActiveCount":  totalActiveCount,
+			"totalPatientCount": totalPatientCount,
 		},
 	})
 }

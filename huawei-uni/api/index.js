@@ -434,6 +434,15 @@ export const uniAPI = {
   getMyPackages: () => {
     return request('/uni/packages');
   },
+  getPackageOptions: () => {
+    return request('/uni/package-options');
+  },
+  applyPackage: (data) => {
+    return request('/uni/package-applications', {
+      method: 'POST',
+      data
+    });
+  },
   // 预约邮寄采样盒
   createSampleBoxRequest: (data) => {
     return request('/uni/sample-box-request', {
