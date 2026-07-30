@@ -1,13 +1,18 @@
 // https://umijs.org/config/
 
-import { join } from 'node:path';
 import { defineConfig } from '@umijs/max';
+import { join } from 'node:path';
+import packageInfo from '../package.json';
 import defaultSettings from './defaultSettings';
 import proxy from './proxy';
 
 import routes from './routes';
 
 const { REACT_APP_ENV = 'dev' } = process.env;
+const releaseTag = process.env.RELEASE_TAG || process.env.GITHUB_REF_NAME;
+const localVersion = releaseTag?.startsWith('v') ? releaseTag : `v${packageInfo.version}`;
+const localReleaseDate = process.env.RELEASE_DATE || '2026-07-30';
+const localBuildCommit = process.env.RELEASE_SHA || process.env.GITHUB_SHA || 'development';
 
 /**
  * @name 使用公共路径
@@ -25,6 +30,12 @@ export default defineConfig({
   hash: true,
 
   publicPath: PUBLIC_PATH,
+
+  define: {
+    __APP_VERSION__: JSON.stringify(localVersion),
+    __APP_RELEASE_DATE__: JSON.stringify(localReleaseDate),
+    __APP_BUILD_COMMIT__: JSON.stringify(localBuildCommit),
+  },
 
   /**
    * @name 兼容性设置
@@ -98,9 +109,9 @@ export default defineConfig({
     plugins: ['duration'],
   },
   // /**
-   //  * @name 国际化插件
-   //  * @doc https://umijs.org/docs/max/i18n
-   //  */
+  //  * @name 国际化插件
+  //  * @doc https://umijs.org/docs/max/i18n
+  //  */
   // locale: {
   //   // default zh-CN
   //   default: 'zh-CN',
@@ -161,8 +172,7 @@ export default defineConfig({
     },
     {
       requestLibPath: "import { request } from '@umijs/max'",
-      schemaPath:
-        'https://gw.alipayobjects.com/os/antfincdn/CA1dOm%2631B/openapi.json',
+      schemaPath: 'https://gw.alipayobjects.com/os/antfincdn/CA1dOm%2631B/openapi.json',
       projectName: 'swagger',
     },
   ],

@@ -332,11 +332,7 @@ declare module 'pdfjs-dist/build/pdf.js' {
 
   export interface PDFPageProxy {
     getViewport(options: { scale: number }): PDFViewport;
-    render(options: {
-      canvasContext: CanvasRenderingContext2D;
-      viewport: PDFViewport;
-      transform?: number[];
-    }): {
+    render(options: { canvasContext: CanvasRenderingContext2D; viewport: PDFViewport; transform?: number[] }): {
       promise: Promise<void>;
     };
     cleanup(): void;
@@ -352,12 +348,7 @@ declare module 'pdfjs-dist/build/pdf.js' {
   }
 
   export const GlobalWorkerOptions: GlobalWorkerOptions;
-  export function getDocument(options: {
-    url: string;
-    disableFontFace?: boolean;
-    fontLoadingTimeout?: number;
-    fontLoadingRetry?: number;
-  }): {
+  export function getDocument(options: { url: string; disableFontFace?: boolean; fontLoadingTimeout?: number; fontLoadingRetry?: number }): {
     promise: Promise<PDFDocumentProxy>;
   };
   const PDFJS: {
@@ -386,4 +377,9 @@ declare module '*.css' {
 declare module '*.scss' {
   const classes: { readonly [key: string]: string };
   export default classes;
+}
+declare global {
+  const __APP_VERSION__: string;
+  const __APP_RELEASE_DATE__: string;
+  const __APP_BUILD_COMMIT__: string;
 }
