@@ -38,6 +38,9 @@
           <text class="report-patient">患者: {{ item.patient_name || '-' }}</text>
           <text class="report-sample">样本: {{ item.sample_code || '-' }}</text>
           <text class="report-time">{{ formatDate(item.generated_time) || '-' }}</text>
+          <text class="view-status" :class="{ viewed: item.patient_viewed }">
+            {{ item.patient_viewed ? `患者已查阅${item.patient_viewed_at ? ' · ' + item.patient_viewed_at : ''}` : '患者未查阅' }}
+          </text>
         </view>
         <view class="report-right">
           <text class="report-arrow">›</text>
@@ -250,6 +253,8 @@ export default {
   font-size: 22rpx;
   color: #a0b0c0;
 }
+.view-status { display: inline-block; margin-top: 10rpx; padding: 5rpx 14rpx; border-radius: 999rpx; background: #fff7e6; color: #d46b08; font-size: 21rpx; }
+.view-status.viewed { background: #f6ffed; color: #389e0d; }
 
 .report-right {
   display: flex;

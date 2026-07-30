@@ -4,6 +4,18 @@
       <input v-model="keyword" class="search-input" placeholder="搜索姓名/手机号/证件号/编号" confirm-type="search" @confirm="searchPatients" />
       <button class="search-btn" @click="searchPatients">搜索</button>
     </view>
+    <view class="filter-row">
+      <picker class="filter-picker" :range="groupFilterOptions" range-key="name" @change="onGroupFilterChange">
+        <view class="filter-value">{{ selectedGroupFilterName }}</view>
+      </picker>
+      <picker class="filter-picker" :range="cancerFilterOptions" range-key="name" @change="onCancerFilterChange">
+        <view class="filter-value">{{ selectedCancerFilterName }}</view>
+      </picker>
+    </view>
+    <view class="group-toolbar">
+      <input v-model="newGroupName" class="group-input" maxlength="30" placeholder="新分组名称" />
+      <button class="group-add" @click="createGroup">新增分组</button>
+    </view>
 
     <view v-if="!selectionMode" class="tabs">
       <view class="tab" :class="{ active: infoStatus === 'pending' }" @click="switchTab('pending')">未完善</view>
@@ -30,6 +42,13 @@
           <view class="info-row"><text class="lbl">证件类型</text><text class="val">{{ item.id_document_type || '-' }}</text></view>
           <view class="info-row"><text class="lbl">证件号</text><text class="val">{{ item.id_document_no || item.id_card || '-' }}</text></view>
           <view class="info-row"><text class="lbl">诊断</text><text class="val">{{ item.diagnosis || '-' }}</text></view>
+          <view class="info-row"><text class="lbl">检测癌型</text><text class="val">{{ item.cancer_types || '-' }}</text></view>
+          <view class="info-row group-line" @click.stop>
+            <text class="lbl">我的分组</text>
+            <picker class="card-group-picker" :range="patientGroupOptions" range-key="name" @change="setPatientGroup(item, $event)">
+              <view class="group-chip">{{ item.group_name || '未分组（点此设置）' }}</view>
+            </picker>
+          </view>
           <view class="actions">
             <button class="small-btn" @click.stop="goComplete(item.id)">{{ item.diagnosis_completed ? '修改' : '完善' }}</button>
             <button class="small-btn primary" @click.stop="goAddSample(item.id)">新增样本</button>
@@ -56,11 +75,30 @@ export default {
       selectionMode: false,
       page: 1,
       pageSize: 20,
-      total: 0
+      total: 0,
+      groups: [],
+      cancerTypes: [],
+      groupId: 0,
+      cancerTypeId: 0,
+      newGroupName: ''
+    }
+  },
+  computed: {
+    groupFilterOptions() { return [{ id: 0, name: '全部分组' }].concat(this.groups) },
+    cancerFilterOptions() { return [{ id: 0, name: '全部癌型' }].concat(this.cancerTypes) },
+    patientGroupOptions() { return [{ id: 0, name: '未分组' }].concat(this.groups) },
+    selectedGroupFilterName() {
+      const item = this.groupFilterOptions.find(v => Number(v.id) === Number(this.groupId))
+      return item ? item.name : '全部分组'
+    },
+    selectedCancerFilterName() {
+      const item = this.cancerFilterOptions.find(v => Number(v.id) === Number(this.cancerTypeId))
+      return item ? item.name : '全部癌型'
     }
   },
   onLoad(options) {
     this.selectionMode = String((options && options.select) || '') === '1'
+    this.loadFilters()
     this.loadPatients()
   },
   onShow() {
@@ -83,6 +121,8 @@ export default {
         const params = {
           keyword: String(this.keyword || '').trim(),
           info_status: this.selectionMode ? '' : this.infoStatus,
+          group_id: this.groupId || '',
+          cancer_type_id: this.cancerTypeId || '',
           page: this.page,
           page_size: this.pageSize
         }
@@ -102,6 +142,52 @@ export default {
     },
     searchPatients() {
       this.loadPatients(true)
+    },
+    async loadFilters() {
+      try {
+        const [groupRes, optionRes] = await Promise.all([
+          uniAPI.getEmployeePatientGroups(),
+          uniAPI.getEmployeeSampleOptions([])
+        ])
+        this.groups = (groupRes.data && groupRes.data.list) || []
+        const cancerData = optionRes.data && optionRes.data.cancer_types
+        this.cancerTypes = Array.isArray(cancerData) ? cancerData : ((cancerData && cancerData.list) || [])
+      } catch (error) {
+        console.error('加载筛选项失败', error)
+      }
+    },
+    onGroupFilterChange(e) {
+      const item = this.groupFilterOptions[Number(e.detail.value)]
+      this.groupId = item ? Number(item.id) : 0
+      this.loadPatients(true)
+    },
+    onCancerFilterChange(e) {
+      const item = this.cancerFilterOptions[Number(e.detail.value)]
+      this.cancerTypeId = item ? Number(item.id) : 0
+      this.loadPatients(true)
+    },
+    async createGroup() {
+      const name = String(this.newGroupName || '').trim()
+      if (!name) { uni.showToast({ title: '请输入分组名称', icon: 'none' }); return }
+      try {
+        await uniAPI.createEmployeePatientGroup({ name })
+        this.newGroupName = ''
+        await this.loadFilters()
+        uni.showToast({ title: '分组已创建', icon: 'success' })
+      } catch (error) {
+        uni.showToast({ title: error.message || '创建失败', icon: 'none' })
+      }
+    },
+    async setPatientGroup(item, event) {
+      const selected = this.patientGroupOptions[Number(event.detail.value)]
+      try {
+        await uniAPI.setEmployeePatientGroup(item.id, selected ? selected.id : 0)
+        item.group_id = selected ? selected.id : 0
+        item.group_name = selected && selected.id ? selected.name : ''
+        await this.loadFilters()
+      } catch (error) {
+        uni.showToast({ title: error.message || '设置失败', icon: 'none' })
+      }
     },
     switchTab(status) {
       this.infoStatus = status
@@ -129,6 +215,15 @@ export default {
 .search-row { display: flex; gap: 16rpx; margin-bottom: 20rpx; }
 .search-input { flex: 1; height: 76rpx; padding: 0 20rpx; border-radius: 14rpx; background: #fff; border: 1rpx solid #e5e9f0; box-sizing: border-box; font-size: 26rpx; }
 .search-btn { width: 136rpx; height: 76rpx; line-height: 76rpx; border-radius: 14rpx; background: #1677ff; color: #fff; font-size: 26rpx; border: none; }
+.filter-row { display: flex; gap: 16rpx; margin-bottom: 16rpx; }
+.filter-picker { flex: 1; }
+.filter-value { height: 72rpx; line-height: 72rpx; padding: 0 18rpx; border-radius: 12rpx; background: #fff; color: #334155; font-size: 24rpx; border: 1rpx solid #e5e9f0; }
+.group-toolbar { display: flex; gap: 14rpx; margin-bottom: 18rpx; }
+.group-input { flex: 1; height: 68rpx; padding: 0 18rpx; border-radius: 12rpx; background: #fff; font-size: 24rpx; border: 1rpx solid #e5e9f0; }
+.group-add { width: 170rpx; height: 68rpx; line-height: 68rpx; padding: 0; border-radius: 12rpx; background: #eaf2ff; color: #1677ff; font-size: 24rpx; border: none; }
+.group-line { align-items: center; }
+.card-group-picker { flex: 1; }
+.group-chip { display: inline-block; padding: 6rpx 16rpx; border-radius: 999rpx; background: #eef6ff; color: #1677ff; font-size: 22rpx; }
 .tabs { display: flex; padding: 8rpx; margin-bottom: 20rpx; border-radius: 16rpx; background: #eaf0f7; }
 .tab { flex: 1; height: 64rpx; line-height: 64rpx; text-align: center; border-radius: 12rpx; color: #6b7785; font-size: 26rpx; }
 .tab.active { background: #fff; color: #1677ff; font-weight: 700; box-shadow: 0 2rpx 8rpx rgba(22,119,255,0.08); }

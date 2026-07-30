@@ -4,26 +4,40 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
+	"github.com/cloudwego/hertz/pkg/common/utils"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 )
 
 var (
-	aiAPIKey   string
-	aiAPIURL   string
-	aiModel    string
-	aiPrompt   string
-	httpClient *http.Client
+	aiAPIKey            string
+	aiAPIURL            string
+	aiModel             string
+	aiPrompt            string
+	aiReportVisionModel string
+	aiReportTextModel   string
+	aiReportPrompt      string
+	httpClient          *http.Client
 )
+
+const defaultReportAnalysisPrompt = `你是华微智检医疗科技的报告信息整理助手。请严格按以下步骤处理患者上传的报告：
+1. 先判断“报告类型”：检查/检验报告、病理报告，或无法确定；
+2. 提取并总结报告中的医院、日期、检查项目、标本、主要所见、关键数值及参考范围、结论/诊断原文；无法辨认的内容明确写“无法辨认”，不得猜测；
+3. 对异常标记仅做客观归纳，不作诊断，不判断良恶性，不提供治疗、用药、手术、放化疗方案；
+4. 使用“报告类型、内容摘要、需要关注的信息、温馨提示”四个小标题，语言简洁、专业、温和；
+5. 结尾固定提示：本总结仅用于帮助阅读原报告，不能替代医生诊断。请携带完整报告前往正规医院，由医生结合病史和其他检查综合判断。`
 
 // AIChatRequest AI 聊天请求结构
 type AIChatRequest struct {
@@ -80,6 +94,9 @@ func InitAIChat() {
 	aiAPIURL = os.Getenv("AI_API_URL")
 	aiModel = os.Getenv("AI_MODEL")
 	aiPrompt = os.Getenv("AI_PROMPT")
+	aiReportVisionModel = firstNonEmptyString(os.Getenv("AI_REPORT_VISION_MODEL"), "ernie-4.5-turbo-vl-32k")
+	aiReportTextModel = firstNonEmptyString(os.Getenv("AI_REPORT_TEXT_MODEL"), "ernie-lite-pro-128k")
+	aiReportPrompt = firstNonEmptyString(os.Getenv("AI_REPORT_PROMPT"), defaultReportAnalysisPrompt)
 
 	if aiAPIKey == "" {
 		log.Println("Warning: AI_API_KEY not found in environment variables")
@@ -99,6 +116,41 @@ func InitAIChat() {
 	}
 
 	log.Println("AI chat client initialized successfully")
+}
+
+// ReloadAISettings 从数据库加载 AI 设置。环境变量只作为数据库首次初始化的来源。
+func ReloadAISettings(db *sql.DB) {
+	if db == nil {
+		return
+	}
+	ensureSystemSettingDefaults(db)
+	rows, err := db.Query(`SELECT key_name, key_value, is_encrypted FROM setting_system
+		WHERE key_name IN ('AI_API_KEY','AI_API_URL','AI_MODEL','AI_PROMPT',
+			'AI_REPORT_VISION_MODEL','AI_REPORT_TEXT_MODEL','AI_REPORT_PROMPT')`)
+	if err != nil {
+		log.Printf("load AI settings from database: %v", err)
+		return
+	}
+	defer rows.Close()
+	values := map[string]string{}
+	for rows.Next() {
+		var key, value string
+		var encrypted int
+		if rows.Scan(&key, &value, &encrypted) != nil {
+			continue
+		}
+		if encrypted == 1 {
+			value = decryptConfigValue(value)
+		}
+		values[key] = value
+	}
+	aiAPIKey = values["AI_API_KEY"]
+	aiAPIURL = firstNonEmptyString(values["AI_API_URL"], "https://qianfan.baidubce.com/v2")
+	aiModel = firstNonEmptyString(values["AI_MODEL"], "ernie-lite-pro-128k")
+	aiPrompt = values["AI_PROMPT"]
+	aiReportVisionModel = firstNonEmptyString(values["AI_REPORT_VISION_MODEL"], "ernie-4.5-turbo-vl-32k")
+	aiReportTextModel = firstNonEmptyString(values["AI_REPORT_TEXT_MODEL"], "ernie-lite-pro-128k")
+	aiReportPrompt = firstNonEmptyString(values["AI_REPORT_PROMPT"], defaultReportAnalysisPrompt)
 }
 
 // GetAIRequestUser 获取调用AI对话的用户身份和AI访问限制状态
@@ -249,6 +301,154 @@ func getChatCompletionsURL() string {
 		return baseURL + "/chat/completions"
 	}
 	return baseURL + "/v1/chat/completions"
+}
+
+func requestAICompletion(model string, messages interface{}) (string, error) {
+	body, err := json.Marshal(map[string]interface{}{"model": model, "messages": messages, "stream": false})
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequest(http.MethodPost, getChatCompletionsURL(), bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+aiAPIKey)
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, 8*1024*1024))
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("AI service returned %d: %s", resp.StatusCode, strings.TrimSpace(string(responseBody)))
+	}
+	var parsed OpenAIChatResponse
+	if err := json.Unmarshal(responseBody, &parsed); err != nil {
+		return "", err
+	}
+	if len(parsed.Choices) == 0 || strings.TrimSpace(parsed.Choices[0].Message.Content) == "" {
+		return "", fmt.Errorf("AI 服务未返回分析内容")
+	}
+	return strings.TrimSpace(parsed.Choices[0].Message.Content), nil
+}
+
+func extractPDFText(file io.Reader) (string, error) {
+	input, err := os.CreateTemp("", "patient-report-*.pdf")
+	if err != nil {
+		return "", err
+	}
+	inputPath := input.Name()
+	outputPath := inputPath + ".txt"
+	defer os.Remove(inputPath)
+	defer os.Remove(outputPath)
+	if _, err := io.Copy(input, io.LimitReader(file, 20*1024*1024+1)); err != nil {
+		input.Close()
+		return "", err
+	}
+	if err := input.Close(); err != nil {
+		return "", err
+	}
+	command := exec.Command("pdftotext", "-layout", "-enc", "UTF-8", inputPath, outputPath)
+	if output, err := command.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("PDF 文字提取失败，请确认服务器已安装 pdftotext: %v (%s)", err, strings.TrimSpace(string(output)))
+	}
+	text, err := os.ReadFile(outputPath)
+	if err != nil {
+		return "", err
+	}
+	result := strings.TrimSpace(string(text))
+	if result == "" {
+		return "", fmt.Errorf("PDF 中未提取到可分析文字；扫描版 PDF 请以图片方式上传")
+	}
+	runes := []rune(result)
+	if len(runes) > 100000 {
+		result = string(runes[:100000])
+	}
+	return result, nil
+}
+
+// HandleAIAnalyzeReport 分析患者上传的图片或 PDF 报告。
+func HandleAIAnalyzeReport(ctx context.Context, c *app.RequestContext) {
+	if aiAPIKey == "" {
+		ErrorResponse(c, consts.StatusInternalServerError, "AI API key not configured", nil)
+		return
+	}
+	userID, patientID, identityType, allowed, err := GetAIRequestUser(c, DB)
+	if err != nil {
+		ErrorResponse(c, consts.StatusUnauthorized, "未提供认证信息，请登录后重试", nil)
+		return
+	}
+	if !allowed {
+		ErrorResponse(c, consts.StatusForbidden, "您的账号已被管理员限制访问AI功能", nil)
+		return
+	}
+	header, err := c.FormFile("file")
+	if err != nil {
+		ErrorResponse(c, consts.StatusBadRequest, "请选择要分析的报告文件", nil)
+		return
+	}
+	if header.Size > 20*1024*1024 {
+		ErrorResponse(c, consts.StatusBadRequest, "报告文件不能超过20MB", nil)
+		return
+	}
+	ext := strings.ToLower(filepath.Ext(header.Filename))
+	file, err := header.Open()
+	if err != nil {
+		ErrorResponse(c, consts.StatusBadRequest, "读取报告文件失败", nil)
+		return
+	}
+	defer file.Close()
+
+	var model string
+	var messages interface{}
+	switch ext {
+	case ".pdf":
+		text, extractErr := extractPDFText(file)
+		if extractErr != nil {
+			ErrorResponse(c, consts.StatusBadRequest, extractErr.Error(), nil)
+			return
+		}
+		model = aiReportTextModel
+		messages = []map[string]interface{}{
+			{"role": "system", "content": aiReportPrompt},
+			{"role": "user", "content": "请分析以下 PDF 报告提取文字：\n\n" + text},
+		}
+	case ".jpg", ".jpeg", ".png", ".webp":
+		data, readErr := io.ReadAll(io.LimitReader(file, 20*1024*1024+1))
+		if readErr != nil {
+			ErrorResponse(c, consts.StatusBadRequest, "读取图片失败", nil)
+			return
+		}
+		mimeType := "image/" + strings.TrimPrefix(ext, ".")
+		if ext == ".jpg" {
+			mimeType = "image/jpeg"
+		}
+		model = aiReportVisionModel
+		messages = []map[string]interface{}{
+			{"role": "system", "content": aiReportPrompt},
+			{"role": "user", "content": []map[string]interface{}{
+				{"type": "text", "text": "请先识别这是检查/检验报告还是病理报告，再按规定结构客观总结。"},
+				{"type": "image_url", "image_url": map[string]string{"url": "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(data)}},
+			}},
+		}
+	default:
+		ErrorResponse(c, consts.StatusBadRequest, "仅支持 JPG、PNG、WEBP 或 PDF 报告", nil)
+		return
+	}
+	content, err := requestAICompletion(model, messages)
+	if err != nil {
+		log.Printf("AI report analysis failed: %v", err)
+		ErrorResponse(c, consts.StatusBadGateway, "报告分析失败，请稍后重试", nil)
+		return
+	}
+	if DB != nil {
+		go RecordAIUsage(DB, estimateTokenCount(content), model, userID, patientID, identityType)
+	}
+	SuccessResponse(c, "分析成功", utils.H{"content": content, "model": model, "file_name": header.Filename})
 }
 
 // estimateTokenCount 估算token数量（按字符数估算，1 token ≈ 4 字符）

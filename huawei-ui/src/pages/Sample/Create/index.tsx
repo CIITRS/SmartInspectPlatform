@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { App, Button, Card, Col, DatePicker, Form, Input, InputNumber, Radio, Row, Select, Space } from 'antd';
 import { useNavigate, useSearchParams } from '@umijs/max';
 import dayjs from 'dayjs';
-import { allocateSamples, createSample, getSampleTypes, getTreatmentStages, listCancerTypes, listPatients } from '@/services/api';
+import { allocateSamples, createSample, getSampleTypes, getTreatmentStages, listCancerTypes, listPackages, listPatients } from '@/services/api';
 
 const treatmentStageOrder = ['健康体检', '辅助诊断', '术前评估', '术后检测', '残留检测', '复发监测', '化疗前', '化疗后'];
 
@@ -21,6 +21,7 @@ const SampleCreate: React.FC = () => {
   const [cancerTypes, setCancerTypes] = useState<any[]>([]);
   const [sampleTypes, setSampleTypes] = useState<any[]>([]);
   const [treatmentStages, setTreatmentStages] = useState<any[]>([]);
+  const [packages, setPackages] = useState<any[]>([]);
   const [mode, setMode] = useState<'single' | 'batch'>('single');
   const patientSearchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const patientRequestSequenceRef = useRef(0);
@@ -69,10 +70,11 @@ const SampleCreate: React.FC = () => {
   useEffect(() => {
     const loadOptions = async () => {
       try {
-        const [cancerRes, sampleTypeRes, stageRes] = await Promise.all([
+        const [cancerRes, sampleTypeRes, stageRes, packageRes] = await Promise.all([
           listCancerTypes({}, { skipErrorHandler: true }),
           getSampleTypes({}, { skipErrorHandler: true }),
           getTreatmentStages({}, { skipErrorHandler: true }),
+          listPackages({ page: 1, pageSize: 100, status: 'active' }, { skipErrorHandler: true }),
         ]);
         setCancerTypes(cancerRes.data || []);
         setSampleTypes(sampleTypeRes.data || []);
@@ -80,6 +82,7 @@ const SampleCreate: React.FC = () => {
           .filter((item: any) => Number(item.isActive ?? item.is_active ?? 1) === 1)
           .filter((item: any) => treatmentStageOrder.includes(String(item.name || '').trim()))
           .sort((a: any, b: any) => getTreatmentStageOrderIndex(a.name) - getTreatmentStageOrderIndex(b.name) || Number(a.id || 0) - Number(b.id || 0)));
+        setPackages(packageRes.data?.list || []);
       } catch (_error) {
         message.error('获取选项列表失败');
       }
@@ -94,6 +97,7 @@ const SampleCreate: React.FC = () => {
       cancer_type_id: searchParams.get('cancerTypeId') ? Number(searchParams.get('cancerTypeId')) : undefined,
       organization_type: '个人送检',
       organization: '个人送检',
+      service_mode: 'single',
     });
 
     return () => {
@@ -105,6 +109,7 @@ const SampleCreate: React.FC = () => {
   }, []);
 
   const organizationType = Form.useWatch('organization_type', form) || '个人送检';
+  const serviceMode = Form.useWatch('service_mode', form) || 'single';
 
   const handleSubmit = async (values: any) => {
     const patientIds = mode === 'single' ? [values.patient_id] : values.patient_ids;
@@ -123,6 +128,10 @@ const SampleCreate: React.FC = () => {
       collection_date: values.collection_date ? values.collection_date.toISOString() : dayjs().toISOString(),
       organization: values.organization_type === '单位送检' ? values.organization || '' : '个人送检',
       notes: values.notes || '',
+      service_mode: values.service_mode || 'single',
+      sale_package_id: values.sale_package_id || 0,
+      return_express_company: values.return_express_company || '',
+      return_tracking_number: values.return_tracking_number || '',
     };
 
     try {
@@ -137,6 +146,10 @@ const SampleCreate: React.FC = () => {
           sample_code: values.sample_code,
           organization: payload.organization,
           notes: values.notes || '',
+          service_mode: values.service_mode || 'single',
+          sale_package_id: values.sale_package_id || 0,
+          return_express_company: values.return_express_company || '',
+          return_tracking_number: values.return_tracking_number || '',
         }, { skipErrorHandler: true });
       } else {
         await allocateSamples(payload, { skipErrorHandler: true });
@@ -196,6 +209,33 @@ const SampleCreate: React.FC = () => {
               />
             </Form.Item>
           )}
+
+          <Row gutter={16}>
+            <Col span={8}>
+              <Form.Item name="service_mode" label="检测方式" rules={[{ required: true }]}>
+                <Radio.Group onChange={(event) => {
+                  if (event.target.value === 'single') form.setFieldValue('sale_package_id', undefined);
+                }}>
+                  <Radio.Button value="single">单次检测</Radio.Button>
+                  <Radio.Button value="package">套餐联检</Radio.Button>
+                </Radio.Group>
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item name="sale_package_id" label="检测套餐" rules={serviceMode === 'package' ? [{ required: true, message: '请选择检测套餐' }] : []}>
+                <Select
+                  disabled={serviceMode !== 'package'}
+                  placeholder={serviceMode === 'package' ? '请选择套餐' : '单次检测无需套餐'}
+                  options={packages.map((item) => ({ value: item.id, label: `${item.name}（${item.detection_count || 1}次）` }))}
+                />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item label="知情同意">
+                <Input disabled value="由患者在小程序首次签署，已签署患者无需重复填写" />
+              </Form.Item>
+            </Col>
+          </Row>
 
           <Row gutter={16}>
             <Col span={8}>
@@ -271,6 +311,16 @@ const SampleCreate: React.FC = () => {
             <Col span={12}>
               <Form.Item name="notes" label="备注">
                 <Input placeholder="请输入备注" />
+              </Form.Item>
+            </Col>
+            <Col span={6}>
+              <Form.Item name="return_express_company" label="回寄快递公司">
+                <Input placeholder="如：顺丰" />
+              </Form.Item>
+            </Col>
+            <Col span={6}>
+              <Form.Item name="return_tracking_number" label="回寄快递单号">
+                <Input placeholder="绑定样本后可登记（选填）" />
               </Form.Item>
             </Col>
           </Row>

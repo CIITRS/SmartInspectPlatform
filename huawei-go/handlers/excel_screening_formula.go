@@ -10,7 +10,7 @@ import (
 	"unicode"
 )
 
-const excelAlignedScreeningFormula = "(sqrt(pow(sum(HWG12,HWG13,HWG10,HWG11,HWG07,HWG03,HWG14,HWG15,HWG16,HWG01_F8,HWG17)/HWG01,2)+pow(count_ge_threshold(HWG12,HWG13,HWG10,HWG11,HWG07,HWG03,HWG14,HWG15,HWG16,HWG01_F8,HWG17)-1,2))+sqrt(pow(sum(HWG02,HWG04,HWG08,HWG05,HWG06,HWG01_V5,HWG09)/HWG01,2)+pow(count_ge_threshold(HWG02,HWG04,HWG08,HWG05,HWG06,HWG01_V5,HWG09)-1,2))*0.65)/sqrt(2*pow(14,2))*100"
+const excelAlignedScreeningFormula = "(sqrt(pow(sum(HWG12,HWG13,HWG10,HWG11,HWG07,HWG03,HWG14,HWG15,HWG16,HWG01_F8,HWG17)/HWG01_F8,2)+pow(count_ge_threshold(HWG12,HWG13,HWG10,HWG11,HWG07,HWG03,HWG14,HWG15,HWG16,HWG01_F8,HWG17)-1,2))+sqrt(pow(sum(HWG02,HWG04,HWG08,HWG05,HWG06,HWG01_V5,HWG09)/HWG01_V5,2)+pow(count_ge_threshold(HWG02,HWG04,HWG08,HWG05,HWG06,HWG01_V5,HWG09)-1,2))*0.65)/sqrt(2*pow(14,2))*100"
 
 func configuredDuplicateAverageGenes(db *sql.DB, modelID int) map[string]bool {
 	result := make(map[string]bool)
@@ -74,9 +74,8 @@ func formulaPlatformSuffix(platform string) string {
 	return strings.Trim(builder.String(), "_")
 }
 
-// enrichExcelDuplicateGeneVariables keeps both platform values and also writes their average
-// to the original symbol. This mirrors Excel: each SUM uses its own B72_THBS1 cell, while
-// both divisors use AVERAGE(F8_B72_THBS1, V5_B72_THBS1).
+// enrichExcelDuplicateGeneVariables keeps the two Panel-specific internal-reference values
+// separate. Each Panel's sum and threshold count use and remove its own internal reference.
 func enrichExcelDuplicateGeneVariables(db *sql.DB, batchID int, sampleCode string, modelID int, geneData map[string]interface{}) (bool, error) {
 	configuredGenes := configuredDuplicateAverageGenes(db, modelID)
 	if len(configuredGenes) == 0 || batchID <= 0 || strings.TrimSpace(sampleCode) == "" {
@@ -91,7 +90,6 @@ func enrichExcelDuplicateGeneVariables(db *sql.DB, batchID int, sampleCode strin
 	}
 	defer rows.Close()
 
-	valuesByGene := make(map[string][]float64)
 	changed := false
 	for rows.Next() {
 		var platform string
@@ -118,7 +116,6 @@ func enrichExcelDuplicateGeneVariables(db *sql.DB, batchID int, sampleCode strin
 			if !ok {
 				continue
 			}
-			valuesByGene[geneSymbol] = append(valuesByGene[geneSymbol], value)
 			suffix := formulaPlatformSuffix(platform)
 			if suffix != "" {
 				geneData[geneSymbol+"_"+suffix] = value
@@ -128,17 +125,6 @@ func enrichExcelDuplicateGeneVariables(db *sql.DB, batchID int, sampleCode strin
 	}
 	if err := rows.Err(); err != nil {
 		return false, err
-	}
-	for geneSymbol, values := range valuesByGene {
-		if len(values) < 2 {
-			continue
-		}
-		sum := 0.0
-		for _, value := range values {
-			sum += value
-		}
-		geneData[geneSymbol] = sum / float64(len(values))
-		changed = true
 	}
 	return changed, nil
 }
@@ -187,9 +173,9 @@ func EnsureExcelAlignedScreeningModels(db *sql.DB) error {
 	for _, model := range models {
 		parameters := map[string]interface{}{}
 		_ = json.Unmarshal([]byte(model.Parameters), &parameters)
-		parameters["formulaVersion"] = "excel-platform-duplicate-v1"
+		parameters["formulaVersion"] = "panel-own-internal-reference-v2"
 		parameters["duplicatePlatformVariables"] = map[string]interface{}{
-			"HWG01": map[string]string{"F8": "HWG01_F8", "V5": "HWG01_V5", "average": "HWG01"},
+			"HWG01": map[string]string{"F8": "HWG01_F8", "V5": "HWG01_V5"},
 		}
 		parametersJSON, _ := json.Marshal(parameters)
 		if _, err := db.Exec(`UPDATE setting_model

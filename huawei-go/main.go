@@ -92,6 +92,7 @@ func main() {
 	handlers.SetDB(db)
 	fmt.Println("数据库连接已传递给handlers包")
 	if db != nil {
+		handlers.ReloadAISettings(db)
 		if err := handlers.EnsureExcelAlignedScreeningModels(db); err != nil {
 			log.Printf("校准健康筛查/肠癌旧版 Excel 公式失败: %v", err)
 		} else {
@@ -440,6 +441,9 @@ func main() {
 		{
 			ai.POST("/chat", func(c context.Context, ctx *app.RequestContext) {
 				handlers.HandleAIChat(c, ctx)
+			})
+			ai.POST("/report-analysis", func(c context.Context, ctx *app.RequestContext) {
+				handlers.HandleAIAnalyzeReport(c, ctx)
 			})
 		}
 
@@ -905,10 +909,10 @@ func main() {
 
 			// AI管理相关路由
 			system.GET("/ai-settings", func(c context.Context, ctx *app.RequestContext) {
-				handlers.HandleGetAISettings(ctx, config.AIAPIKey, config.AIAPIURL, config.AIModel, config.AIPrompt)
+				handlers.HandleGetAISettings(ctx, db)
 			})
 			system.PUT("/ai-settings", func(c context.Context, ctx *app.RequestContext) {
-				handlers.HandleUpdateAISettings(ctx)
+				handlers.HandleUpdateAISettings(ctx, db)
 			})
 			system.GET("/ai-usage", func(c context.Context, ctx *app.RequestContext) {
 				handlers.HandleGetAIUsage(ctx, db)
@@ -1235,6 +1239,18 @@ func main() {
 			})
 			uni.GET("/employee/patients", func(c context.Context, ctx *app.RequestContext) {
 				handlers.HandleUniEmployeePatients(ctx, db)
+			})
+			uni.GET("/employee/patient-groups", func(c context.Context, ctx *app.RequestContext) {
+				handlers.HandleUniEmployeePatientGroups(ctx, db)
+			})
+			uni.POST("/employee/patient-groups", func(c context.Context, ctx *app.RequestContext) {
+				handlers.HandleUniEmployeeCreatePatientGroup(ctx, db)
+			})
+			uni.DELETE("/employee/patient-groups/:id", func(c context.Context, ctx *app.RequestContext) {
+				handlers.HandleUniEmployeeDeletePatientGroup(ctx, db)
+			})
+			uni.PUT("/employee/patients/:id/group", func(c context.Context, ctx *app.RequestContext) {
+				handlers.HandleUniEmployeeSetPatientGroup(ctx, db)
 			})
 			uni.GET("/employee/patients/:id", func(c context.Context, ctx *app.RequestContext) {
 				handlers.HandleUniEmployeePatientDetail(ctx, db)

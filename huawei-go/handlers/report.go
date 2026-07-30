@@ -432,6 +432,7 @@ func HandleListReports(c *app.RequestContext, db *sql.DB) {
 				ORDER BY (mu.employee_id = p.sales_person) DESC LIMIT 1), p.sales_person, '') as salesName,
 			COALESCE(gu.real_name, gu.username) as generatedBy,
 			COALESCE(ru.real_name, ru.username) as reviewedBy
+			, r.patient_viewed_at, COALESCE(r.patient_view_count, 0)
 		FROM detect_report r
 		LEFT JOIN detect_sample s ON r.sample_id = s.id
 		LEFT JOIN detect_patient p ON s.patient_id = p.id
@@ -461,10 +462,12 @@ func HandleListReports(c *app.RequestContext, db *sql.DB) {
 		var status, reportRole, reportType, detect_patientName, detect_patientIdCard, sampleCode, sampleType, cancerTypeName, salesPerson, salesName, generatedBy, reviewedBy sql.NullString
 		var gender sql.NullString
 		var createdAt, updatedAt, generatedTime, reviewedTime, reportDate, sampleCollectedAt sql.NullTime
+		var patientViewedAt sql.NullTime
+		var patientViewCount int
 
 		err := rows.Scan(&id, &status, &reportRole, &parentReportID, &createdAt, &updatedAt, &generatedTime, &reviewedTime, &reportDate, &reportType,
 			&detect_patientName, &detect_patientIdCard, &gender, &sampleCode, &sampleType, &sampleCollectedAt,
-			&cancerTypeID, &cancerTypeName, &salesPerson, &salesName, &generatedBy, &reviewedBy)
+			&cancerTypeID, &cancerTypeName, &salesPerson, &salesName, &generatedBy, &reviewedBy, &patientViewedAt, &patientViewCount)
 		if err != nil {
 			log.Printf("Failed to scan detect_report: %v", err)
 			continue
@@ -475,23 +478,28 @@ func HandleListReports(c *app.RequestContext, db *sql.DB) {
 
 		// 构建报告信息
 		detect_report := utils.H{
-			"id":             id,
-			"sampleCode":     sampleCode.String,
-			"patientName":    detect_patientName.String,
-			"status":         status.String,
-			"reportType":     reportType.String,
-			"reportDate":     reportDate.Time.Format("2006-01-02T15:04:05+08:00"),
-			"cancerTypeId":   cancerTypeID,
-			"cancerTypeName": cancerTypeName.String,
-			"salesPerson":    salesPerson.String,
-			"salesName":      salesName.String,
-			"generatedBy":    generatedBy.String,
-			"reviewedBy":     reviewedBy.String,
-			"createdAt":      createdAt.Time.Format("2006-01-02T15:04:05+08:00"),
-			"updatedAt":      updatedAt.Time.Format("2006-01-02T15:04:05+08:00"),
-			"patientAge":     detect_patientAge,
-			"gender":         gender.String,
-			"sampleType":     sampleType.String,
+			"id":               id,
+			"sampleCode":       sampleCode.String,
+			"patientName":      detect_patientName.String,
+			"status":           status.String,
+			"reportType":       reportType.String,
+			"reportDate":       reportDate.Time.Format("2006-01-02T15:04:05+08:00"),
+			"cancerTypeId":     cancerTypeID,
+			"cancerTypeName":   cancerTypeName.String,
+			"salesPerson":      salesPerson.String,
+			"salesName":        salesName.String,
+			"generatedBy":      generatedBy.String,
+			"reviewedBy":       reviewedBy.String,
+			"createdAt":        createdAt.Time.Format("2006-01-02T15:04:05+08:00"),
+			"updatedAt":        updatedAt.Time.Format("2006-01-02T15:04:05+08:00"),
+			"patientAge":       detect_patientAge,
+			"gender":           gender.String,
+			"sampleType":       sampleType.String,
+			"patientViewed":    patientViewedAt.Valid,
+			"patientViewCount": patientViewCount,
+		}
+		if patientViewedAt.Valid {
+			detect_report["patientViewedAt"] = patientViewedAt.Time.Format("2006-01-02T15:04:05+08:00")
 		}
 		detect_report["reportRole"] = reportRole.String
 		detect_report["report_role"] = reportRole.String
