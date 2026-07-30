@@ -22,6 +22,12 @@
         <input v-model="form.sender_address" placeholder="请输入寄件地址" class="form-input" />
       </view>
       <view class="form-item">
+        <text class="form-label">快递公司</text>
+        <picker :range="expressCompanies" range-key="name" @change="onExpressCompanyChange">
+          <view class="form-input picker-value">{{ selectedExpressCompany.name }}</view>
+        </picker>
+      </view>
+      <view class="form-item">
         <text class="form-label">快递单号（选填）</text>
         <input v-model="form.tracking_no" placeholder="已寄出请填快递单号" class="form-input" />
       </view>
@@ -57,6 +63,22 @@
           </view>
         </view>
         <view class="info-row" v-if="item.express_status"><text class="lbl">快递状态</text><text class="val">{{ expressStatusMap[item.express_status] || item.express_status }}</text></view>
+        <view class="info-row" v-if="item.delivered_at"><text class="lbl">签收时间</text><text class="val">{{ item.delivered_at }}</text></view>
+        <view class="info-row" v-if="item.latest_event_status"><text class="lbl">最新动态</text><text class="val address">{{ item.latest_event_status }}</text></view>
+        <button
+          v-if="item.tracking_number"
+          class="query-btn"
+          :loading="queryingId === item.id"
+          @click="queryExpress(item)"
+        >查询物流</button>
+        <view v-if="trackingDetails[item.id]" class="tracking-detail">
+          <text v-if="trackingDetails[item.id].last_query_error" class="tracking-error">{{ trackingDetails[item.id].last_query_error }}</text>
+          <text v-else-if="trackingDetails[item.id].status === 'delivered'" class="signed-tip">已签收，中间物流路径已清除</text>
+          <view v-else v-for="(event, index) in trackingDetails[item.id].route || []" :key="index" class="route-item">
+            <text class="route-status">{{ event.status }}</text>
+            <text class="route-time">{{ event.time }}</text>
+          </view>
+        </view>
       </view>
     </view>
   </view>
@@ -70,11 +92,29 @@ export default {
     return {
       loading: false,
       submitting: false,
+      queryingId: 0,
       showForm: false,
       mailSamples: [],
-      form: { sender_name: '', sender_phone: '', sender_address: '', tracking_no: '', notes: '' },
+      trackingDetails: {},
+      expressCompanyIndex: 0,
+      expressCompanies: [
+        { name: '自动识别', type: 'auto' },
+        { name: '顺丰速运', type: 'sfexpress' },
+        { name: '圆通快递', type: 'yuantong' },
+        { name: '中通快递', type: 'zhongtong' },
+        { name: '韵达快递', type: 'yunda' },
+        { name: '申通快递', type: 'shentong' },
+        { name: '京东物流', type: 'jd' },
+        { name: '邮政 EMS', type: 'ems' }
+      ],
+      form: { sender_name: '', sender_phone: '', sender_address: '', express_type: 'auto', express_company: '自动识别', tracking_no: '', notes: '' },
       statusMap: { created: '已创建', collected: '已采集', received: '已接收', processing: '检测中', tested: '已检测', completed: '已完成' },
-      expressStatusMap: { pending: '待揽件', picked_up: '已揽件', in_transit: '运输中', delivered: '已签收', returned: '退件' }
+      expressStatusMap: { pending: '待揽件', picked_up: '已揽件', in_transit: '运输中', delivered: '已签收', exception: '物流异常', returned: '退件' }
+    }
+  },
+  computed: {
+    selectedExpressCompany() {
+      return this.expressCompanies[this.expressCompanyIndex] || this.expressCompanies[0]
     }
   },
   onLoad() {
@@ -105,7 +145,8 @@ export default {
         const res = await uniAPI.createMailSample(this.form)
         if (res.success) {
           uni.showToast({ title: '提交成功', icon: 'success' })
-          this.form = { sender_name: '', sender_phone: '', sender_address: '', tracking_no: '', notes: '' }
+          this.expressCompanyIndex = 0
+          this.form = { sender_name: '', sender_phone: '', sender_address: '', express_type: 'auto', express_company: '自动识别', tracking_no: '', notes: '' }
           this.showForm = false
           this.loadMailSamples()
         } else {
@@ -115,6 +156,31 @@ export default {
         uni.showToast({ title: '网络错误', icon: 'none' })
       } finally {
         this.submitting = false
+      }
+    },
+    onExpressCompanyChange(event) {
+      const index = Number(event.detail.value || 0)
+      const company = this.expressCompanies[index] || this.expressCompanies[0]
+      this.expressCompanyIndex = index
+      this.form.express_type = company.type
+      this.form.express_company = company.name
+    },
+    async queryExpress(item) {
+      this.queryingId = item.id
+      try {
+        const res = await uniAPI.getExpress(item.id)
+        if (res.success && res.data) {
+          this.$set(this.trackingDetails, item.id, res.data)
+          item.express_status = res.data.status
+          item.delivered_at = res.data.delivered_at || item.delivered_at
+          item.latest_event_status = res.data.latest_event_status || item.latest_event_status
+        } else {
+          uni.showToast({ title: res.message || '暂无物流信息', icon: 'none' })
+        }
+      } catch (e) {
+        uni.showToast({ title: '物流查询失败', icon: 'none' })
+      } finally {
+        this.queryingId = 0
       }
     },
     copyTracking(code) {
@@ -137,6 +203,7 @@ export default {
 .form-item { padding: 20rpx 0; border-bottom: 1rpx solid #f0f2f5; }
 .form-label { display: block; font-size: 24rpx; color: #8c9aa8; margin-bottom: 12rpx; }
 .form-input { width: 100%; height: 72rpx; padding: 0 20rpx; border: 2rpx solid #e5e7eb; border-radius: 12rpx; background: #f9fafb; box-sizing: border-box; font-size: 26rpx; }
+.picker-value { display: flex; align-items: center; color: #1f2d3d; }
 .submit-btn { margin-top: 24rpx; width: 100%; height: 88rpx; border-radius: 16rpx; background: #1677ff; color: #fff; font-size: 28rpx; border: none; }
 .submit-btn[disabled] { opacity: 0.6; }
 .state-box { display: flex; flex-direction: column; align-items: center; padding: 96rpx 0; }
@@ -156,4 +223,11 @@ export default {
 .tracking-wrap { flex: 1; display: flex; justify-content: flex-end; align-items: center; gap: 12rpx; }
 .tracking { color: #1677ff; }
 .copy-btn { flex: 0 0 auto; font-size: 20rpx; color: #fff; background: #1677ff; padding: 4rpx 12rpx; border-radius: 8rpx; }
+.query-btn { margin-top: 16rpx; width: 100%; height: 68rpx; line-height: 68rpx; border-radius: 12rpx; background: #eef5ff; color: #1677ff; font-size: 24rpx; border: none; }
+.tracking-detail { margin-top: 16rpx; padding: 18rpx; border-radius: 12rpx; background: #f8fafc; }
+.route-item { padding: 12rpx 0; border-bottom: 1rpx solid #edf0f3; }
+.route-status { display: block; font-size: 23rpx; color: #1f2d3d; }
+.route-time { display: block; margin-top: 6rpx; font-size: 20rpx; color: #8c9aa8; }
+.tracking-error { color: #f56c6c; font-size: 22rpx; }
+.signed-tip { color: #52c41a; font-size: 22rpx; }
 </style>

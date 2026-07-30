@@ -1351,13 +1351,14 @@ func HandleUniGetMailSamples(c *app.RequestContext, db *sql.DB) {
 	phoneStr, _ := phone.(string)
 
 	query := `SELECT s.id, s.sample_code, s.sample_status, s.collection_date, s.notes,
-		e.id, e.express_company, e.tracking_number, e.sender_name, e.sender_phone,
-		e.sender_address, e.status, e.send_time, e.created_at
+		e.id, e.express_type, e.express_company, e.tracking_number, e.sender_name, e.sender_phone,
+		e.sender_address, e.status, e.send_time, e.delivered_at, e.latest_event_status,
+		e.last_query_at, e.created_at
 		FROM detect_sample s
 		JOIN detect_patient p ON s.patient_id = p.id
 		LEFT JOIN detect_sample_express e ON e.id = (
 			SELECT e2.id FROM detect_sample_express e2
-			WHERE e2.sample_id = s.id
+			WHERE e2.sample_id = s.id AND e2.direction = 'inbound'
 			ORDER BY e2.created_at DESC LIMIT 1
 		)
 		WHERE p.phone = ? AND p.is_active = 1
@@ -1379,11 +1380,12 @@ func HandleUniGetMailSamples(c *app.RequestContext, db *sql.DB) {
 		var collectionDate sql.NullTime
 		var notes sql.NullString
 		var expressID sql.NullInt64
-		var company, trackingNumber, senderName, senderPhone, senderAddress, expressStatus sql.NullString
-		var sendTime, createdAt sql.NullTime
+		var expressType, company, trackingNumber, senderName, senderPhone, senderAddress, expressStatus, latestEventStatus sql.NullString
+		var sendTime, deliveredAt, lastQueryAt, createdAt sql.NullTime
 		if err := rows.Scan(&sampleID, &sampleCode, &sampleStatus, &collectionDate, &notes,
-			&expressID, &company, &trackingNumber, &senderName, &senderPhone,
-			&senderAddress, &expressStatus, &sendTime, &createdAt); err != nil {
+			&expressID, &expressType, &company, &trackingNumber, &senderName, &senderPhone,
+			&senderAddress, &expressStatus, &sendTime, &deliveredAt, &latestEventStatus,
+			&lastQueryAt, &createdAt); err != nil {
 			log.Printf("Scan mail sample error: %v", err)
 			continue
 		}
@@ -1401,6 +1403,9 @@ func HandleUniGetMailSamples(c *app.RequestContext, db *sql.DB) {
 		}
 		if expressID.Valid {
 			item["express_id"] = expressID.Int64
+		}
+		if expressType.Valid {
+			item["express_type"] = expressType.String
 		}
 		if company.Valid {
 			item["express_company"] = company.String
@@ -1422,6 +1427,15 @@ func HandleUniGetMailSamples(c *app.RequestContext, db *sql.DB) {
 		}
 		if sendTime.Valid {
 			item["send_time"] = sendTime.Time.Format("2006-01-02 15:04")
+		}
+		if deliveredAt.Valid {
+			item["delivered_at"] = deliveredAt.Time.Format("2006-01-02 15:04")
+		}
+		if latestEventStatus.Valid {
+			item["latest_event_status"] = latestEventStatus.String
+		}
+		if lastQueryAt.Valid {
+			item["last_query_at"] = lastQueryAt.Time.Format("2006-01-02 15:04")
 		}
 		if createdAt.Valid {
 			item["created_at"] = createdAt.Time.Format("2006-01-02 15:04")
@@ -2130,11 +2144,13 @@ func HandleUniCreateMailSample(c *app.RequestContext, db *sql.DB) {
 	phoneStr, _ := phone.(string)
 
 	var req struct {
-		SenderName    string `json:"sender_name"`
-		SenderPhone   string `json:"sender_phone"`
-		SenderAddress string `json:"sender_address"`
-		TrackingNo    string `json:"tracking_no"`
-		Notes         string `json:"notes"`
+		SenderName     string `json:"sender_name"`
+		SenderPhone    string `json:"sender_phone"`
+		SenderAddress  string `json:"sender_address"`
+		ExpressCompany string `json:"express_company"`
+		ExpressType    string `json:"express_type"`
+		TrackingNo     string `json:"tracking_no"`
+		Notes          string `json:"notes"`
 	}
 
 	body, err := c.Body()
@@ -2205,9 +2221,20 @@ func HandleUniCreateMailSample(c *app.RequestContext, db *sql.DB) {
 
 	if req.TrackingNo != "" && sampleID > 0 {
 		_, err = db.Exec(`INSERT INTO detect_sample_express
-			(sample_id, sample_code, tracking_number, sender_name, sender_phone, sender_address, status, notes, send_time)
-			VALUES (?, ?, ?, ?, ?, ?, 'in_transit', ?, NOW())`,
-			sampleID, sampleCode, req.TrackingNo, req.SenderName, req.SenderPhone, req.SenderAddress, req.Notes)
+			(sample_id, sample_code, direction, express_type, express_company, tracking_number,
+			 query_mobile, sender_name, sender_phone, sender_address, status, notes, send_time)
+			VALUES (?, ?, 'inbound', ?, ?, ?, ?, ?, ?, ?, 'in_transit', ?, NOW())
+			ON DUPLICATE KEY UPDATE express_type = VALUES(express_type),
+				express_company = VALUES(express_company), tracking_number = VALUES(tracking_number),
+				query_mobile = VALUES(query_mobile), sender_name = VALUES(sender_name),
+				sender_phone = VALUES(sender_phone), sender_address = VALUES(sender_address),
+				status = 'in_transit', notes = VALUES(notes), send_time = NOW(),
+				provider_status = NULL, provider_message = '', route_json = NULL,
+				latest_event_time = NULL, latest_event_status = '', delivered_at = NULL,
+				last_query_at = NULL, last_query_error = '', updated_at = NOW()`,
+			sampleID, sampleCode, normalizeExpressType(req.ExpressType),
+			strings.TrimSpace(req.ExpressCompany), req.TrackingNo, req.SenderPhone,
+			req.SenderName, req.SenderPhone, req.SenderAddress, req.Notes)
 		if err != nil {
 			log.Printf("Create mail sample express error: %v", err)
 		}
@@ -2850,8 +2877,8 @@ func HandleUniEmployeeAllocateSamples(c *app.RequestContext, db *sql.DB) {
 		id, _ := result.LastInsertId()
 		if tracking := strings.TrimSpace(req.ReturnTrackingNumber); tracking != "" {
 			if _, err := tx.Exec(`INSERT INTO detect_sample_express
-				(sample_id, sample_code, express_company, tracking_number, status, created_at, updated_at)
-				VALUES (?, ?, ?, ?, 'in_transit', NOW(), NOW())`,
+				(sample_id, sample_code, direction, express_type, express_company, tracking_number, status, created_at, updated_at)
+				VALUES (?, ?, 'inbound', 'auto', ?, ?, 'in_transit', NOW(), NOW())`,
 				id, code, strings.TrimSpace(req.ReturnExpressCompany), tracking); err != nil {
 				c.JSON(consts.StatusInternalServerError, ApiResponse{Code: 500, Success: false, Message: "保存回寄快递单号失败", Data: nil})
 				return

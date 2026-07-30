@@ -354,18 +354,9 @@ func HandleUniGetSampleExpress(c *app.RequestContext, db *sql.DB) {
 		return
 	}
 
-	query := `SELECT id, sample_id, sample_code, express_company, tracking_number,
-		sender_name, sender_phone, sender_address, receiver_name, receiver_phone,
-		receiver_address, send_time, receive_time, status, notes, created_at, updated_at
-		FROM detect_sample_express WHERE sample_id = ? ORDER BY created_at DESC LIMIT 1`
-	var express Express
-	err = db.QueryRow(query, sampleID).Scan(
-		&express.ID, &express.SampleID, &express.SampleCode, &express.ExpressCompany,
-		&express.TrackingNumber, &express.SenderName, &express.SenderPhone, &express.SenderAddress,
-		&express.ReceiverName, &express.ReceiverPhone, &express.ReceiverAddress,
-		&express.SendTime, &express.ReceiveTime, &express.Status, &express.Notes,
-		&express.CreatedAt, &express.UpdatedAt,
-	)
+	var expressID int
+	err = db.QueryRow(`SELECT id FROM detect_sample_express
+		WHERE sample_id = ? AND direction = 'inbound' LIMIT 1`, sampleID).Scan(&expressID)
 	if err == sql.ErrNoRows {
 		c.JSON(consts.StatusOK, ApiResponse{Code: 200, Success: true, Message: "暂无快递运单", Data: nil})
 		return
@@ -374,5 +365,13 @@ func HandleUniGetSampleExpress(c *app.RequestContext, db *sql.DB) {
 		c.JSON(consts.StatusInternalServerError, ApiResponse{Code: 500, Success: false, Message: "查询失败", Data: nil})
 		return
 	}
-	c.JSON(consts.StatusOK, ApiResponse{Code: 200, Success: true, Message: "获取成功", Data: scanExpress(&express)})
+	data, refreshErr := refreshExpressByID(db, expressID)
+	if refreshErr != nil {
+		data, err = getExpressByID(db, expressID)
+		if err != nil {
+			c.JSON(consts.StatusInternalServerError, ApiResponse{Code: 500, Success: false, Message: "查询失败", Data: nil})
+			return
+		}
+	}
+	c.JSON(consts.StatusOK, ApiResponse{Code: 200, Success: true, Message: "获取成功", Data: data})
 }

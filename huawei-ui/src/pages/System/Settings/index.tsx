@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Table, Button, Input, Form, Row, Col, Card, Tabs, App, InputNumber, Select, Switch, Statistic, Progress, Tag, Space, Alert, Typography } from 'antd';
-import { SaveOutlined, ReloadOutlined, CloudServerOutlined, MessageOutlined, FileTextOutlined, FolderOpenOutlined, FileOutlined } from '@ant-design/icons';
+import { SaveOutlined, ReloadOutlined, CloudServerOutlined, MessageOutlined, FileTextOutlined, FolderOpenOutlined, FileOutlined, TruckOutlined } from '@ant-design/icons';
 
 const { Option } = Select;
 const { TextArea } = Input;
@@ -17,7 +17,7 @@ const SMS_SWITCH_KEYS = new Set([
   'SMS_ADMIN_LOGIN_ENABLED', 'SMS_MINIAPP_LOGIN_ENABLED', 'SMS_ADMIN_BIND_PHONE_ENABLED',
   'SMS_MINIAPP_BIND_PHONE_ENABLED', 'SMS_INVITE_REGISTER_ENABLED', 'SMS_REPORT_READY_ENABLED',
 ]);
-const SETTINGS_SWITCH_KEYS = new Set([...SMS_SWITCH_KEYS, 'QINIU_ENABLED']);
+const SETTINGS_SWITCH_KEYS = new Set([...SMS_SWITCH_KEYS, 'QINIU_ENABLED', 'EXPRESS_QUERY_ENABLED']);
 
 const smsSwitchItems = [
   ['SMS_ADMIN_LOGIN_ENABLED', '管理后台登录', '后台员工登录验证码'],
@@ -546,6 +546,68 @@ const Settings: React.FC = () => {
     </Form>
   );
 
+  const ExpressSettingsForm = () => (
+    <Form form={form} layout="vertical" onFinish={handleSave}>
+      <Alert
+        type="info"
+        showIcon
+        message="系统只保存每个样本、每个寄送方向的当前运单。运输中轨迹会覆盖更新；签收后清除中间轨迹，仅保留签收状态与签收时间。"
+        style={{ marginBottom: 24 }}
+      />
+      <Card title={<Space><TruckOutlined />百度 API 市场快递查询</Space>} style={{ marginBottom: 24 }}>
+        <Form.Item name="EXPRESS_QUERY_ENABLED" label="启用自动物流查询" valuePropName="checked">
+          <Switch checkedChildren="启用" unCheckedChildren="关闭" />
+        </Form.Item>
+        <Row gutter={16}>
+          <Col xs={24} md={12}>
+            <Form.Item
+              name="EXPRESS_API_URL"
+              label="调用地址"
+              rules={[{ required: true, message: '请输入快递查询 API 地址' }]}
+            >
+              <Input placeholder="https://jisuexpress.api.bdymkt.com/express/query" />
+            </Form.Item>
+          </Col>
+          <Col xs={24} md={12}>
+            <Form.Item
+              name="EXPRESS_POLL_INTERVAL_MINUTES"
+              label="自动刷新间隔（分钟）"
+              tooltip="最低 5 分钟；默认 30 分钟。"
+            >
+              <InputNumber min={5} max={1440} precision={0} style={{ width: '100%' }} />
+            </Form.Item>
+          </Col>
+        </Row>
+        <Row gutter={16}>
+          <Col xs={24} md={12}>
+            <Form.Item
+              name="EXPRESS_APP_KEY"
+              label="AppCode / AppKey"
+              rules={[{ required: true, message: '请输入 AppCode / AppKey' }]}
+              tooltip="接口以 X-Bce-Signature: AppCode/{AppKey} 鉴权。"
+            >
+              <Input.Password autoComplete="new-password" placeholder="请输入 AppCode / AppKey" />
+            </Form.Item>
+          </Col>
+          <Col xs={24} md={12}>
+            <Form.Item
+              name="EXPRESS_APP_SECRET"
+              label="AppSecret"
+              tooltip="加密保存。当前接口使用 AppCode 鉴权，不会把 AppSecret 发送给查询服务。"
+            >
+              <Input.Password autoComplete="new-password" placeholder="请输入 AppSecret" />
+            </Form.Item>
+          </Col>
+        </Row>
+      </Card>
+      <Form.Item>
+        <Button type="primary" htmlType="submit" icon={<SaveOutlined />} loading={saving}>
+          保存快递配置
+        </Button>
+      </Form.Item>
+    </Form>
+  );
+
   const StorageSettingsForm = () => (
     <Form form={form} layout="vertical" onFinish={handleSave}>
       <Alert
@@ -686,6 +748,11 @@ const Settings: React.FC = () => {
       key: 'miniapp-content',
       label: '小程序内容',
       children: <MiniappContentForm />,
+    },
+    {
+      key: 'express',
+      label: '快递查询',
+      children: <ExpressSettingsForm />,
     },
     {
       key: 'storage',

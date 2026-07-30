@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/joho/godotenv"
@@ -477,8 +478,11 @@ func EnsureSchema(db *sql.DB, dbName string) error {
 			id INT AUTO_INCREMENT PRIMARY KEY,
 			sample_id INT NOT NULL,
 			sample_code VARCHAR(100) NOT NULL,
+			direction VARCHAR(20) NOT NULL DEFAULT 'inbound',
+			express_type VARCHAR(50) NOT NULL DEFAULT 'auto',
 			express_company VARCHAR(100),
 			tracking_number VARCHAR(100) NOT NULL,
+			query_mobile VARCHAR(20),
 			sender_name VARCHAR(100),
 			sender_phone VARCHAR(20),
 			sender_address VARCHAR(255),
@@ -487,10 +491,19 @@ func EnsureSchema(db *sql.DB, dbName string) error {
 			receiver_address VARCHAR(255),
 			send_time DATETIME,
 			receive_time DATETIME,
+			delivered_at DATETIME,
 			status VARCHAR(30) DEFAULT 'pending',
+			provider_status INT DEFAULT NULL,
+			provider_message VARCHAR(255) DEFAULT '',
+			route_json LONGTEXT,
+			latest_event_time DATETIME,
+			latest_event_status VARCHAR(500) DEFAULT '',
+			last_query_at DATETIME,
+			last_query_error VARCHAR(500) DEFAULT '',
 			notes TEXT,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+			UNIQUE KEY uk_sample_express_current (sample_id, direction),
 			KEY idx_sample_express_sample (sample_id),
 			KEY idx_sample_express_tracking (tracking_number)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,
@@ -730,33 +743,64 @@ func EnsureSchema(db *sql.DB, dbName string) error {
 		}
 	}
 	sampleColumns := map[string]string{
-		"sample_code":         "VARCHAR(100) UNIQUE",
-		"sample_type_id":      "INT DEFAULT NULL",
-		"cancer_type_id":      "INT DEFAULT NULL",
-		"treatment_stage_id":  "INT DEFAULT NULL",
-		"collection_date":     "DATETIME DEFAULT NULL",
-		"collection_operator": "INT DEFAULT NULL",
-		"receive_date":        "DATETIME DEFAULT NULL",
-		"receive_operator":    "INT DEFAULT NULL",
-		"test_operator":       "INT DEFAULT NULL",
-		"test_completed_at":   "DATETIME DEFAULT NULL",
-		"report_type":         "VARCHAR(50) DEFAULT 'normal'",
-		"notes":               "TEXT",
-		"organization":        "VARCHAR(255) DEFAULT ''",
-		"sample_created_at":   "DATETIME DEFAULT CURRENT_TIMESTAMP",
-		"sample_updated_at":   "DATETIME DEFAULT CURRENT_TIMESTAMP",
-		"result_data":         "LONGTEXT",
-		"result_status":       "VARCHAR(50) DEFAULT ''",
-		"signalvalue":         "DOUBLE DEFAULT NULL",
-		"batch_id":            "INT DEFAULT NULL",
-		"model_id":            "INT DEFAULT NULL",
-		"service_mode":        "VARCHAR(20) NOT NULL DEFAULT 'single'",
-		"sale_package_id":     "INT DEFAULT NULL",
+		"sample_code":                "VARCHAR(100) UNIQUE",
+		"sample_type_id":             "INT DEFAULT NULL",
+		"cancer_type_id":             "INT DEFAULT NULL",
+		"treatment_stage_id":         "INT DEFAULT NULL",
+		"collection_date":            "DATETIME DEFAULT NULL",
+		"collection_operator":        "INT DEFAULT NULL",
+		"receive_date":               "DATETIME DEFAULT NULL",
+		"receive_operator":           "INT DEFAULT NULL",
+		"test_operator":              "INT DEFAULT NULL",
+		"test_completed_at":          "DATETIME DEFAULT NULL",
+		"report_type":                "VARCHAR(50) DEFAULT 'normal'",
+		"notes":                      "TEXT",
+		"organization":               "VARCHAR(255) DEFAULT ''",
+		"sample_created_at":          "DATETIME DEFAULT CURRENT_TIMESTAMP",
+		"sample_updated_at":          "DATETIME DEFAULT CURRENT_TIMESTAMP",
+		"result_data":                "LONGTEXT",
+		"result_status":              "VARCHAR(50) DEFAULT ''",
+		"signalvalue":                "DOUBLE DEFAULT NULL",
+		"batch_id":                   "INT DEFAULT NULL",
+		"model_id":                   "INT DEFAULT NULL",
+		"service_mode":               "VARCHAR(20) NOT NULL DEFAULT 'single'",
+		"sale_package_id":            "INT DEFAULT NULL",
+		"inbound_express_signed_at":  "DATETIME DEFAULT NULL",
+		"outbound_express_signed_at": "DATETIME DEFAULT NULL",
 	}
 	for column, definition := range sampleColumns {
 		if err := ensureColumn(db, dbName, "detect_sample", column, definition); err != nil {
 			return err
 		}
+	}
+	expressColumns := map[string]string{
+		"direction":           "VARCHAR(20) NOT NULL DEFAULT 'inbound'",
+		"express_type":        "VARCHAR(50) NOT NULL DEFAULT 'auto'",
+		"query_mobile":        "VARCHAR(20) DEFAULT NULL",
+		"delivered_at":        "DATETIME DEFAULT NULL",
+		"provider_status":     "INT DEFAULT NULL",
+		"provider_message":    "VARCHAR(255) DEFAULT ''",
+		"route_json":          "LONGTEXT",
+		"latest_event_time":   "DATETIME DEFAULT NULL",
+		"latest_event_status": "VARCHAR(500) DEFAULT ''",
+		"last_query_at":       "DATETIME DEFAULT NULL",
+		"last_query_error":    "VARCHAR(500) DEFAULT ''",
+	}
+	for column, definition := range expressColumns {
+		if err := ensureColumn(db, dbName, "detect_sample_express", column, definition); err != nil {
+			return err
+		}
+	}
+	if _, err := db.Exec(`DELETE older FROM detect_sample_express older
+		JOIN detect_sample_express newer
+		  ON newer.sample_id = older.sample_id
+		 AND newer.direction = older.direction
+		 AND newer.id > older.id`); err != nil {
+		return err
+	}
+	if err := ensureCompositeUniqueIndex(db, dbName, "detect_sample_express",
+		"uk_sample_express_current", []string{"sample_id", "direction"}); err != nil {
+		return err
 	}
 	panelMatchColumns := map[string]string{
 		"matched_panel_ids_json": "LONGTEXT",
@@ -950,6 +994,28 @@ func ensureSingleColumnUniqueIndex(db *sql.DB, dbName, tableName, columnName, in
 
 	if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %s ADD UNIQUE KEY %s (%s)", tableName, indexName, columnName)); err != nil {
 		return fmt.Errorf("failed to add unique index %s on %s.%s: %v", indexName, tableName, columnName, err)
+	}
+	return nil
+}
+
+func ensureCompositeUniqueIndex(db *sql.DB, dbName, tableName, indexName string, columns []string) error {
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM information_schema.STATISTICS
+		WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND INDEX_NAME = ? AND NON_UNIQUE = 0`,
+		dbName, tableName, indexName).Scan(&count); err != nil {
+		return fmt.Errorf("failed to inspect unique index %s.%s: %v", tableName, indexName, err)
+	}
+	if count == len(columns) {
+		return nil
+	}
+	if count > 0 {
+		if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %s DROP INDEX %s", tableName, indexName)); err != nil {
+			return fmt.Errorf("failed to replace unique index %s.%s: %v", tableName, indexName, err)
+		}
+	}
+	if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %s ADD UNIQUE KEY %s (%s)",
+		tableName, indexName, strings.Join(columns, ", "))); err != nil {
+		return fmt.Errorf("failed to add unique index %s on %s: %v", indexName, tableName, err)
 	}
 	return nil
 }

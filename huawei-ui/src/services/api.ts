@@ -2637,8 +2637,8 @@ export async function batchSetSampleReceiveDate(body: { sampleCodes: string[]; r
 }
 
 // 快递运单相关API
-export async function getSampleExpress(sampleId: string, options?: { [key: string]: any }) {
-  return apiRequest<{ data: any }>(`/api/samples/${sampleId}/express`, {
+export async function getSampleExpress(sampleId: string, direction = 'inbound', options?: { [key: string]: any }) {
+  return apiRequest<{ data: any }>(`/api/express/${sampleId}?direction=${encodeURIComponent(direction)}`, {
     method: 'GET',
     ...(options || {}),
     resolveResponse: (response: any) => {
@@ -2667,8 +2667,8 @@ export async function getSampleExpress(sampleId: string, options?: { [key: strin
 }
 
 export async function saveSampleExpress(sampleId: string, body: any, options?: { [key: string]: any }) {
-  const snakeCaseBody = toSnakeCase(body);
-  return apiRequest<{ success: boolean; message: string }>(`/api/samples/${sampleId}/express`, {
+  const snakeCaseBody = toSnakeCase({ ...body, sampleId: Number(sampleId) });
+  return apiRequest<{ success: boolean; message: string; data?: any }>(`/api/express/create`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -2703,7 +2703,7 @@ export async function saveSampleExpress(sampleId: string, body: any, options?: {
 
 export async function updateSampleExpress(sampleId: string, body: any, options?: { [key: string]: any }) {
   const snakeCaseBody = toSnakeCase(body);
-  return apiRequest<{ success: boolean; message: string }>(`/api/samples/${sampleId}/express`, {
+  return apiRequest<{ success: boolean; message: string }>(`/api/express/${sampleId}`, {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
@@ -2731,6 +2731,24 @@ export async function updateSampleExpress(sampleId: string, body: any, options?:
       return {
         success,
         message
+      };
+    },
+  });
+}
+
+export async function refreshSampleExpress(expressId: string | number, options?: { [key: string]: any }) {
+  return apiRequest<{ success: boolean; message: string; data: any }>(`/api/express/${expressId}/query`, {
+    method: 'POST',
+    ...(options || {}),
+    resolveResponse: (response: any) => {
+      const apiResponse = response.data;
+      if (apiResponse.code !== 200 && apiResponse.success !== true) {
+        throw new Error(apiResponse.message || '物流查询失败');
+      }
+      return {
+        success: true,
+        message: apiResponse.message,
+        data: apiResponse.data,
       };
     },
   });

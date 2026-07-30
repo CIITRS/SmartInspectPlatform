@@ -110,6 +110,7 @@ func main() {
 		}
 		handlers.EnsureDefaultStaff(db)
 		handlers.StartSMSCodeCleanup(db)
+		handlers.StartExpressTrackingWorker(db)
 		fmt.Println("默认员工账号与角色权限已校准")
 	}
 
@@ -1022,6 +1023,9 @@ func main() {
 			})
 			express.PUT("/:id", func(c context.Context, ctx *app.RequestContext) {
 				handlers.HandleUpdateExpress(ctx, db)
+			})
+			express.POST("/:id/query", func(c context.Context, ctx *app.RequestContext) {
+				handlers.HandleRefreshExpress(ctx, db)
 			})
 			express.DELETE("/:id", func(c context.Context, ctx *app.RequestContext) {
 				handlers.HandleDeleteExpress(ctx, db)

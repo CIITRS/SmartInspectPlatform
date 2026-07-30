@@ -491,8 +491,8 @@ func HandleCreateSample(c *app.RequestContext, db *sql.DB) {
 	}
 	if tracking := strings.TrimSpace(req.ReturnTrackingNumber); tracking != "" {
 		if _, expressErr := db.Exec(`INSERT INTO detect_sample_express
-			(sample_id, sample_code, express_company, tracking_number, status, created_at, updated_at)
-			VALUES (?, ?, ?, ?, 'in_transit', NOW(), NOW())`, id, detect_sampleCode, strings.TrimSpace(req.ReturnExpressCompany), tracking); expressErr != nil {
+			(sample_id, sample_code, direction, express_type, express_company, tracking_number, status, created_at, updated_at)
+			VALUES (?, ?, 'inbound', 'auto', ?, ?, 'in_transit', NOW(), NOW())`, id, detect_sampleCode, strings.TrimSpace(req.ReturnExpressCompany), tracking); expressErr != nil {
 			log.Printf("Failed to save return express for sample %s: %v", detect_sampleCode, expressErr)
 		}
 	}
@@ -700,8 +700,8 @@ func HandleAllocateSamples(c *app.RequestContext, db *sql.DB) {
 		id, _ := result.LastInsertId()
 		if len(req.PatientIDs) == 1 && strings.TrimSpace(req.ReturnTrackingNumber) != "" {
 			if _, err := tx.Exec(`INSERT INTO detect_sample_express
-				(sample_id, sample_code, express_company, tracking_number, status, created_at, updated_at)
-				VALUES (?, ?, ?, ?, 'in_transit', NOW(), NOW())`,
+				(sample_id, sample_code, direction, express_type, express_company, tracking_number, status, created_at, updated_at)
+				VALUES (?, ?, 'inbound', 'auto', ?, ?, 'in_transit', NOW(), NOW())`,
 				id, code, strings.TrimSpace(req.ReturnExpressCompany), strings.TrimSpace(req.ReturnTrackingNumber)); err != nil {
 				c.JSON(consts.StatusInternalServerError, ApiResponse{Code: 500, Success: false, Message: "保存回寄快递单号失败", Data: nil})
 				return
