@@ -371,6 +371,55 @@ func extractPDFText(file io.Reader) (string, error) {
 	return result, nil
 }
 
+// AnalyzePatientReportReader 根据报告扩展名选择视觉或文本模型并返回结构化总结。
+func AnalyzePatientReportReader(fileName string, file io.Reader) (string, string, error) {
+	if strings.TrimSpace(aiAPIKey) == "" {
+		return "", "", fmt.Errorf("AI API key not configured")
+	}
+	ext := strings.ToLower(filepath.Ext(strings.Split(fileName, "?")[0]))
+	var model string
+	var messages interface{}
+	switch ext {
+	case ".pdf":
+		text, err := extractPDFText(file)
+		if err != nil {
+			return "", "", err
+		}
+		model = aiReportTextModel
+		messages = []map[string]interface{}{
+			{"role": "system", "content": aiReportPrompt},
+			{"role": "user", "content": "请分析以下 PDF 报告提取文字：\n\n" + text},
+		}
+	case ".jpg", ".jpeg", ".png", ".webp":
+		data, err := io.ReadAll(io.LimitReader(file, 20*1024*1024+1))
+		if err != nil {
+			return "", "", fmt.Errorf("读取图片失败: %w", err)
+		}
+		if len(data) > 20*1024*1024 {
+			return "", "", fmt.Errorf("报告文件不能超过20MB")
+		}
+		mimeType := "image/" + strings.TrimPrefix(ext, ".")
+		if ext == ".jpg" {
+			mimeType = "image/jpeg"
+		}
+		model = aiReportVisionModel
+		messages = []map[string]interface{}{
+			{"role": "system", "content": aiReportPrompt},
+			{"role": "user", "content": []map[string]interface{}{
+				{"type": "text", "text": "请先识别这是检查/检验报告还是病理报告，再按规定结构客观总结。"},
+				{"type": "image_url", "image_url": map[string]string{"url": "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(data)}},
+			}},
+		}
+	default:
+		return "", "", fmt.Errorf("仅支持 JPG、PNG、WEBP 或 PDF 报告")
+	}
+	content, err := requestAICompletion(model, messages)
+	if err != nil {
+		return "", model, err
+	}
+	return content, model, nil
+}
+
 // HandleAIAnalyzeReport 分析患者上传的图片或 PDF 报告。
 func HandleAIAnalyzeReport(ctx context.Context, c *app.RequestContext) {
 	if aiAPIKey == "" {
@@ -403,43 +452,13 @@ func HandleAIAnalyzeReport(ctx context.Context, c *app.RequestContext) {
 	}
 	defer file.Close()
 
-	var model string
-	var messages interface{}
 	switch ext {
-	case ".pdf":
-		text, extractErr := extractPDFText(file)
-		if extractErr != nil {
-			ErrorResponse(c, consts.StatusBadRequest, extractErr.Error(), nil)
-			return
-		}
-		model = aiReportTextModel
-		messages = []map[string]interface{}{
-			{"role": "system", "content": aiReportPrompt},
-			{"role": "user", "content": "请分析以下 PDF 报告提取文字：\n\n" + text},
-		}
-	case ".jpg", ".jpeg", ".png", ".webp":
-		data, readErr := io.ReadAll(io.LimitReader(file, 20*1024*1024+1))
-		if readErr != nil {
-			ErrorResponse(c, consts.StatusBadRequest, "读取图片失败", nil)
-			return
-		}
-		mimeType := "image/" + strings.TrimPrefix(ext, ".")
-		if ext == ".jpg" {
-			mimeType = "image/jpeg"
-		}
-		model = aiReportVisionModel
-		messages = []map[string]interface{}{
-			{"role": "system", "content": aiReportPrompt},
-			{"role": "user", "content": []map[string]interface{}{
-				{"type": "text", "text": "请先识别这是检查/检验报告还是病理报告，再按规定结构客观总结。"},
-				{"type": "image_url", "image_url": map[string]string{"url": "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(data)}},
-			}},
-		}
+	case ".pdf", ".jpg", ".jpeg", ".png", ".webp":
 	default:
 		ErrorResponse(c, consts.StatusBadRequest, "仅支持 JPG、PNG、WEBP 或 PDF 报告", nil)
 		return
 	}
-	content, err := requestAICompletion(model, messages)
+	content, model, err := AnalyzePatientReportReader(header.Filename, file)
 	if err != nil {
 		log.Printf("AI report analysis failed: %v", err)
 		ErrorResponse(c, consts.StatusBadGateway, "报告分析失败，请稍后重试", nil)

@@ -1832,6 +1832,10 @@ func HandleDeletePatientReportFile(c *app.RequestContext, db *sql.DB) {
 		c.JSON(consts.StatusInternalServerError, ApiResponse{Code: 500, Success: false, Message: "删除报告失败", Data: nil})
 		return
 	}
+	if _, err := db.Exec(`DELETE FROM patient_report_analysis WHERE patient_id = ? AND file_key = ?`,
+		patientID, patientReportFileKey(request.FileURL)); err != nil {
+		log.Printf("清理患者报告AI分析记录失败 patient=%d: %v", patientID, err)
+	}
 
 	cleanupWarning := ""
 	qiniuConfig := loadQiniuStorageConfig()
@@ -1886,33 +1890,29 @@ func HandleGetPatientReportPreviewURL(c *app.RequestContext, db *sql.DB) {
 		return
 	}
 
+	previewURL, expiresAt, err := storedPatientReportPreviewURL(patientCode, fileURL)
+	if err != nil {
+		log.Printf("生成患者报告预览地址失败: %v", err)
+		c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: err.Error(), Data: nil})
+		return
+	}
+	c.JSON(consts.StatusOK, ApiResponse{
+		Code: 200, Success: true, Message: "获取报告预览地址成功",
+		Data: utils.H{"preview_url": previewURL, "expires_at": expiresAt},
+	})
+}
+
+func storedPatientReportPreviewURL(patientCode, fileURL string) (string, int64, error) {
 	config := loadQiniuStorageConfig()
 	if objectName, ok := qiniuObjectNameFromURL(config, fileURL); ok {
 		expectedPrefix := "uploads/patient_report/" + strings.ToUpper(patientCode) + "/"
 		if !strings.HasPrefix(objectName, expectedPrefix) {
-			c.JSON(consts.StatusForbidden, ApiResponse{Code: 403, Success: false, Message: "报告文件路径与患者不匹配", Data: nil})
-			return
+			return "", 0, fmt.Errorf("报告文件路径与患者不匹配")
 		}
-		previewURL, expiresAt, err := generateQiniuPrivateDownloadURL(config, fileURL, time.Now(), 10*time.Minute)
-		if err != nil {
-			log.Printf("生成患者报告预览地址失败: %v", err)
-			c.JSON(consts.StatusInternalServerError, ApiResponse{Code: 500, Success: false, Message: "生成报告预览地址失败", Data: nil})
-			return
-		}
-		c.JSON(consts.StatusOK, ApiResponse{
-			Code: 200, Success: true, Message: "获取报告预览地址成功",
-			Data: utils.H{"preview_url": previewURL, "expires_at": expiresAt},
-		})
-		return
+		return generateQiniuPrivateDownloadURL(config, fileURL, time.Now(), 10*time.Minute)
 	}
-
-	// 兼容升级前保存在本机 uploads 目录中的报告。
 	if _, ok := legacyPatientReportLocalPath(fileURL); ok {
-		c.JSON(consts.StatusOK, ApiResponse{
-			Code: 200, Success: true, Message: "获取报告预览地址成功",
-			Data: utils.H{"preview_url": fileURL, "expires_at": 0},
-		})
-		return
+		return fileURL, 0, nil
 	}
-	c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: "不支持预览该报告地址", Data: nil})
+	return "", 0, fmt.Errorf("不支持预览该报告地址")
 }

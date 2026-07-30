@@ -31,12 +31,24 @@
         <view class="info-row"><text class="lbl">病理信息</text><text class="val">{{ patient.cancer_pathology || '-' }}</text></view>
         <view class="info-row"><text class="lbl">预后信息</text><text class="val">{{ patient.prognosis_info || '-' }}</text></view>
         <view class="info-row"><text class="lbl">其他信息</text><text class="val">{{ patient.other_info || '-' }}</text></view>
+        <view v-if="reportFiles.length" class="report-file-list">
+          <text class="report-file-title">患者报告</text>
+          <view v-for="(file, index) in reportFiles" :key="file" class="report-file-item" @click="openPatientReport(file)">
+            <text class="report-file-name">{{ reportFileName(file, index) }}</text>
+            <text class="report-file-action">原图与AI分析 ›</text>
+          </view>
+        </view>
         <view v-if="followUps.length" class="follow-list">
           <view v-for="item in followUps" :key="item.id" class="follow-item">
             <view class="info-row"><text class="lbl">完善时间</text><text class="val">{{ item.created_at || '-' }}</text></view>
             <view class="info-row" v-if="item.diagnosis_info"><text class="lbl">检测信息</text><text class="val">{{ item.diagnosis_info }}</text></view>
             <view class="info-row" v-if="item.report_notes"><text class="lbl">结果说明</text><text class="val">{{ item.report_notes }}</text></view>
-            <view class="info-row" v-if="item.images && item.images.length"><text class="lbl">报告文件</text><text class="val">{{ item.images.join('，') }}</text></view>
+            <view v-if="item.images && item.images.length" class="follow-report-list">
+              <view v-for="(file, imageIndex) in item.images" :key="file" class="report-file-item" @click="openPatientReport(file)">
+                <text class="report-file-name">{{ reportFileName(file, imageIndex) }}</text>
+                <text class="report-file-action">查看 ›</text>
+              </view>
+            </view>
           </view>
         </view>
       </view>
@@ -75,6 +87,56 @@
     <view class="bottom-bar">
       <button class="add-btn" :disabled="!patient.id" @click="addSample">新增样本</button>
     </view>
+
+    <view v-if="reportModal.open" class="report-modal-mask" @click="closePatientReport" @touchmove.stop.prevent>
+      <view class="report-modal" @click.stop>
+        <view class="report-modal-head">
+          <view>
+            <text class="report-modal-title">{{ reportModal.name || '患者报告' }}</text>
+            <text class="report-modal-subtitle">原图与 AI 报告分析</text>
+          </view>
+          <text class="report-modal-close" @click="closePatientReport">×</text>
+        </view>
+        <scroll-view class="report-modal-scroll" scroll-y>
+          <view class="report-preview-card">
+            <text class="report-panel-title">报告原图</text>
+            <view v-if="reportModal.previewLoading" class="report-state">原图加载中...</view>
+            <image
+              v-else-if="reportModal.kind === 'image' && reportModal.previewUrl"
+              :src="reportModal.previewUrl"
+              class="report-preview-image"
+              mode="widthFix"
+              @error="handleReportImageError"
+            />
+            <view v-else-if="reportModal.kind === 'pdf'" class="report-pdf-tip">
+              <text>PDF 报告请在文档阅读器中查看原文</text>
+              <button class="report-open-btn" @click="openReportDocument">打开 PDF 原文</button>
+            </view>
+            <view v-else class="report-state">暂不支持预览该文件格式</view>
+          </view>
+          <view class="report-analysis-card">
+            <view class="report-analysis-head">
+              <text class="report-panel-title">AI 报告分析</text>
+              <button class="report-retry-btn" :disabled="reportModal.analysisLoading" @click="retryReportAnalysis">
+                {{ reportModal.analysisLoading ? '分析中' : '重新分析' }}
+              </button>
+            </view>
+            <view v-if="reportModal.analysisLoading" class="report-state">正在识别报告类型并整理内容，请稍候...</view>
+            <text v-else-if="reportModal.analysis && reportModal.analysis.status === 'completed'" class="report-analysis-text">{{ reportModal.analysis.content }}</text>
+            <view v-else-if="reportModal.analysis && reportModal.analysis.status === 'failed'" class="report-error">
+              <text>{{ reportModal.analysis.error_message || '分析失败，请稍后重试' }}</text>
+              <button class="report-open-btn" @click="retryReportAnalysis">重试</button>
+            </view>
+            <view v-else class="report-state">等待 AI 分析</view>
+            <view v-if="reportModal.analysis && reportModal.analysis.status === 'completed'" class="report-analysis-meta">
+              <text v-if="reportModal.analysis.model">模型：{{ reportModal.analysis.model }}</text>
+              <text v-if="reportModal.analysis.analyzed_at">分析时间：{{ reportModal.analysis.analyzed_at }}</text>
+            </view>
+            <text class="report-disclaimer">AI 内容仅帮助阅读原报告，不能替代医生诊断，请以原报告和医生判断为准。</text>
+          </view>
+        </scroll-view>
+      </view>
+    </view>
   </view>
 </template>
 
@@ -89,6 +151,17 @@ export default {
       patient: {},
       samples: [],
       followUps: [],
+      reportFiles: [],
+      reportModal: {
+        open: false,
+        fileUrl: '',
+        name: '',
+        kind: 'other',
+        previewUrl: '',
+        previewLoading: false,
+        analysisLoading: false,
+        analysis: null
+      },
       statusMap: {
         created: '已创建',
         collected: '已采集',
@@ -120,6 +193,7 @@ export default {
           this.patient = res.data.patient || {}
           this.samples = Array.isArray(res.data.samples) ? res.data.samples : []
           this.followUps = Array.isArray(res.data.follow_ups) ? res.data.follow_ups : []
+          this.reportFiles = this.collectReportFiles(this.patient.report_files, this.followUps)
         } else {
           uni.showToast({ title: res.message || '加载失败', icon: 'none' })
         }
@@ -140,6 +214,94 @@ export default {
     openSample(item) {
       if (!item || !item.has_report) return
       uni.navigateTo({ url: `/pages/employee/sample-detail/index?id=${item.id}` })
+    },
+    collectReportFiles(value, followUps) {
+      const files = String(value || '').split(',').map(item => item.trim()).filter(Boolean)
+      ;(followUps || []).forEach(item => {
+        ;(item.images || []).forEach(file => {
+          if (file && !files.includes(file)) files.push(file)
+        })
+      })
+      return files
+    },
+    reportFileName(fileUrl, index) {
+      const encoded = String(fileUrl || '').split('?')[0].split('/').pop()
+      if (!encoded) return `患者报告${index + 1}`
+      try {
+        return decodeURIComponent(encoded)
+      } catch (error) {
+        return encoded
+      }
+    },
+    reportKind(fileUrl) {
+      const clean = String(fileUrl || '').split('?')[0].toLowerCase()
+      if (/\.(jpg|jpeg|png|webp)$/.test(clean)) return 'image'
+      if (clean.endsWith('.pdf')) return 'pdf'
+      return 'other'
+    },
+    async openPatientReport(fileUrl) {
+      this.reportModal = {
+        open: true,
+        fileUrl,
+        name: this.reportFileName(fileUrl, 0),
+        kind: this.reportKind(fileUrl),
+        previewUrl: '',
+        previewLoading: true,
+        analysisLoading: true,
+        analysis: null
+      }
+      const previewTask = uniAPI.getEmployeePatientReportPreview(this.patientId, fileUrl)
+        .then(res => {
+          if (!res.success || !res.data || !res.data.preview_url) throw new Error(res.message || '原图加载失败')
+          this.reportModal.previewUrl = res.data.preview_url
+        })
+        .catch(error => {
+          uni.showToast({ title: error.message || '原图加载失败', icon: 'none' })
+        })
+        .finally(() => {
+          this.reportModal.previewLoading = false
+        })
+      const analysisTask = this.loadReportAnalysis(false)
+      await Promise.allSettled([previewTask, analysisTask])
+    },
+    async loadReportAnalysis(force) {
+      if (!this.reportModal.fileUrl) return
+      this.reportModal.analysisLoading = true
+      try {
+        if (!force) {
+          const stored = await uniAPI.getEmployeePatientReportAnalysis(this.patientId, this.reportModal.fileUrl)
+          if (stored.success && stored.data && stored.data.status === 'completed') {
+            this.reportModal.analysis = stored.data
+            return
+          }
+        }
+        const result = await uniAPI.analyzeEmployeePatientReport(this.patientId, this.reportModal.fileUrl, force)
+        if (!result.success) throw new Error(result.message || '报告分析失败')
+        this.reportModal.analysis = result.data
+      } catch (error) {
+        this.reportModal.analysis = { status: 'failed', error_message: error.message || '报告分析失败，请稍后重试' }
+      } finally {
+        this.reportModal.analysisLoading = false
+      }
+    },
+    retryReportAnalysis() {
+      this.loadReportAnalysis(true)
+    },
+    closePatientReport() {
+      this.reportModal.open = false
+    },
+    handleReportImageError() {
+      uni.showToast({ title: '原图加载失败，请稍后重试', icon: 'none' })
+    },
+    openReportDocument() {
+      if (!this.reportModal.previewUrl) return
+      uni.downloadFile({
+        url: this.reportModal.previewUrl,
+        success: res => {
+          if (res.statusCode === 200) uni.openDocument({ filePath: res.tempFilePath, showMenu: true })
+        },
+        fail: () => uni.showToast({ title: 'PDF 打开失败', icon: 'none' })
+      })
     }
   }
 }
@@ -165,6 +327,12 @@ export default {
 .mini-btn { width: 128rpx; height: 58rpx; line-height: 58rpx; border-radius: 12rpx; border: none; background: #f0f5ff; color: #1677ff; font-size: 24rpx; }
 .follow-list { margin-top: 18rpx; border-top: 1rpx solid #f0f2f5; }
 .follow-item { padding-top: 16rpx; }
+.report-file-list { margin-top: 22rpx; padding-top: 18rpx; border-top: 1rpx solid #f0f2f5; }
+.report-file-title { display: block; margin-bottom: 10rpx; color: #1f2d3d; font-size: 26rpx; font-weight: 600; }
+.follow-report-list { margin-top: 14rpx; }
+.report-file-item { display: flex; align-items: center; justify-content: space-between; gap: 16rpx; min-height: 76rpx; padding: 8rpx 0; border-bottom: 1rpx solid #f5f5f5; }
+.report-file-name { flex: 1; min-width: 0; color: #34495e; font-size: 25rpx; word-break: break-all; }
+.report-file-action { flex-shrink: 0; color: #1677ff; font-size: 24rpx; }
 .empty-card { display: flex; justify-content: center; padding: 72rpx 0; color: #8c9aa8; font-size: 26rpx; }
 .sample-list { display: flex; flex-direction: column; gap: 20rpx; }
 .sample-card.clickable { border: 1rpx solid #bae0ff; }
@@ -180,4 +348,24 @@ export default {
 .bottom-bar { position: fixed; left: 0; right: 0; bottom: 0; padding: 18rpx 32rpx calc(18rpx + env(safe-area-inset-bottom)); background: rgba(255,255,255,0.96); box-shadow: 0 -4rpx 18rpx rgba(31,45,61,0.08); box-sizing: border-box; }
 .add-btn { width: 100%; height: 88rpx; line-height: 88rpx; border-radius: 16rpx; border: none; background: #1677ff; color: #fff; font-size: 30rpx; font-weight: 600; }
 .add-btn[disabled] { background: #a0cfff; color: #fff; }
+.report-modal-mask { position: fixed; z-index: 1000; inset: 0; display: flex; align-items: flex-end; background: rgba(0,0,0,0.48); }
+.report-modal { width: 100%; max-height: 92vh; padding-bottom: env(safe-area-inset-bottom); border-radius: 28rpx 28rpx 0 0; background: #f5f7fa; overflow: hidden; }
+.report-modal-head { display: flex; align-items: center; justify-content: space-between; gap: 20rpx; min-height: 96rpx; padding: 18rpx 28rpx; background: #fff; border-bottom: 1rpx solid #edf0f3; box-sizing: border-box; }
+.report-modal-title { display: block; max-width: 600rpx; color: #1f2d3d; font-size: 28rpx; font-weight: 700; word-break: break-all; }
+.report-modal-subtitle { display: block; margin-top: 6rpx; color: #8c9aa8; font-size: 22rpx; }
+.report-modal-close { width: 72rpx; height: 72rpx; line-height: 68rpx; text-align: center; color: #607080; font-size: 52rpx; }
+.report-modal-scroll { height: calc(92vh - 96rpx - env(safe-area-inset-bottom)); padding: 22rpx; box-sizing: border-box; }
+.report-preview-card, .report-analysis-card { margin-bottom: 20rpx; padding: 24rpx; border-radius: 18rpx; background: #fff; box-shadow: 0 2rpx 12rpx rgba(22,119,255,0.05); }
+.report-panel-title { color: #1f2d3d; font-size: 28rpx; font-weight: 700; }
+.report-preview-image { display: block; width: 100%; margin-top: 20rpx; background: #f7f8fa; }
+.report-state { padding: 64rpx 20rpx; color: #8c9aa8; font-size: 26rpx; line-height: 1.6; text-align: center; }
+.report-pdf-tip { padding: 44rpx 16rpx 20rpx; color: #607080; font-size: 26rpx; text-align: center; }
+.report-open-btn { min-width: 180rpx; height: 72rpx; margin-top: 22rpx; line-height: 72rpx; border: none; border-radius: 12rpx; background: #1677ff; color: #fff; font-size: 25rpx; }
+.report-analysis-head { display: flex; align-items: center; justify-content: space-between; gap: 16rpx; padding-bottom: 18rpx; border-bottom: 1rpx solid #f0f2f5; }
+.report-retry-btn { width: 164rpx; height: 64rpx; line-height: 64rpx; margin: 0; border: none; border-radius: 12rpx; background: #f0f5ff; color: #1677ff; font-size: 24rpx; }
+.report-retry-btn[disabled] { color: #8c9aa8; background: #f4f5f6; }
+.report-analysis-text { display: block; padding: 22rpx 0; color: #263445; font-size: 27rpx; line-height: 1.75; white-space: pre-wrap; word-break: break-word; }
+.report-analysis-meta { display: flex; flex-direction: column; gap: 8rpx; padding: 16rpx 0; border-top: 1rpx solid #f0f2f5; color: #8c9aa8; font-size: 22rpx; }
+.report-error { padding: 32rpx 8rpx; color: #c0392b; font-size: 25rpx; line-height: 1.6; text-align: center; }
+.report-disclaimer { display: block; margin-top: 20rpx; padding: 18rpx; border-radius: 12rpx; background: #e6f4ff; color: #315b7d; font-size: 23rpx; line-height: 1.6; }
 </style>

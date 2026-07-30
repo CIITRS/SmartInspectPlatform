@@ -525,6 +525,21 @@ export const uniAPI = {
   getEmployeePatientDetail: (id) => {
     return request(`/uni/employee/patients/${id}`);
   },
+  getEmployeePatientReportPreview: (id, fileUrl) => {
+    return request(`/uni/employee/patients/${id}/report-files/preview?file_url=${encodeURIComponent(fileUrl)}`);
+  },
+  getEmployeePatientReportAnalysis: (id, fileUrl) => {
+    return request(`/uni/employee/patients/${id}/report-files/analysis?file_url=${encodeURIComponent(fileUrl)}`, {
+      showError: false
+    });
+  },
+  analyzeEmployeePatientReport: (id, fileUrl, force = false) => {
+    return request(`/uni/employee/patients/${id}/report-files/analysis${force ? '?force=1' : ''}`, {
+      method: 'POST',
+      data: { file_url: fileUrl },
+      showError: false
+    });
+  },
   completeEmployeePatient: (id, data) => {
     return request(`/uni/employee/patients/${id}/completion`, {
       method: 'POST',

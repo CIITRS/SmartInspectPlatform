@@ -475,6 +475,12 @@ func main() {
 			patients.GET("/:id/report-files/preview", func(c context.Context, ctx *app.RequestContext) {
 				handlers.HandleGetPatientReportPreviewURL(ctx, db)
 			})
+			patients.GET("/:id/report-files/analysis", func(c context.Context, ctx *app.RequestContext) {
+				handlers.HandleGetPatientReportAnalysis(ctx, db)
+			})
+			patients.POST("/:id/report-files/analysis", func(c context.Context, ctx *app.RequestContext) {
+				handlers.HandleAnalyzePatientReport(ctx, db)
+			})
 			patients.DELETE("/:id", func(c context.Context, ctx *app.RequestContext) {
 				handlers.HandleDeletePatient(ctx, db)
 			})
@@ -1267,6 +1273,15 @@ func main() {
 			})
 			uni.GET("/employee/patients/:id", func(c context.Context, ctx *app.RequestContext) {
 				handlers.HandleUniEmployeePatientDetail(ctx, db)
+			})
+			uni.GET("/employee/patients/:id/report-files/preview", func(c context.Context, ctx *app.RequestContext) {
+				handlers.HandleUniEmployeePatientReportPreview(ctx, db)
+			})
+			uni.GET("/employee/patients/:id/report-files/analysis", func(c context.Context, ctx *app.RequestContext) {
+				handlers.HandleUniEmployeeGetPatientReportAnalysis(ctx, db)
+			})
+			uni.POST("/employee/patients/:id/report-files/analysis", func(c context.Context, ctx *app.RequestContext) {
+				handlers.HandleUniEmployeeAnalyzePatientReport(ctx, db)
 			})
 			uni.POST("/employee/patients/:id/completion", func(c context.Context, ctx *app.RequestContext) {
 				handlers.HandleUniEmployeeCompletePatient(ctx, db)

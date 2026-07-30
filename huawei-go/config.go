@@ -405,6 +405,24 @@ func EnsureSchema(db *sql.DB, dbName string) error {
 			UNIQUE KEY uk_ai_blacklist_subject (subject_type, subject_code),
 			KEY idx_ai_blacklist_subject_code (subject_code)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,
+		`CREATE TABLE IF NOT EXISTS patient_report_analysis (
+			id BIGINT AUTO_INCREMENT PRIMARY KEY,
+			patient_id INT NOT NULL,
+			file_key CHAR(64) NOT NULL,
+			file_url TEXT NOT NULL,
+			file_name VARCHAR(255) DEFAULT '',
+			file_type VARCHAR(20) DEFAULT '',
+			status VARCHAR(20) NOT NULL DEFAULT 'pending',
+			analysis_text LONGTEXT,
+			model VARCHAR(100) DEFAULT '',
+			error_message VARCHAR(500) DEFAULT '',
+			analyzed_at DATETIME DEFAULT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+			UNIQUE KEY uk_patient_report_analysis (patient_id, file_key),
+			KEY idx_patient_report_analysis_status (status),
+			KEY idx_patient_report_analysis_patient (patient_id)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,
 		`CREATE TABLE IF NOT EXISTS setting_system (
 			id INT AUTO_INCREMENT PRIMARY KEY,
 			key_name VARCHAR(100) NOT NULL UNIQUE,

@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { Form, Input, Select, Button, Card, Spin, DatePicker, App, Upload, message, Row, Col, Modal } from 'antd';
+import { Form, Input, Select, Button, Card, Spin, DatePicker, App, Upload, message, Row, Col, Modal, Alert, Empty, Skeleton, Space, Tag, Typography } from 'antd';
 import { useParams, useNavigate, useModel } from '@umijs/max';
 import { getPatientDetail, updatePatient } from '@/services/api';
 import dayjs from 'dayjs'; // 引入 dayjs
-import { UploadOutlined } from '@ant-design/icons';
+import { RobotOutlined, SyncOutlined, UploadOutlined } from '@ant-design/icons';
+import '@/components/PatientReportPreview/index.less';
 
 const { Dragger } = Upload;
 const { Option } = Select;
@@ -44,6 +45,9 @@ const Edit: React.FC = () => {
     url: string;
     kind: 'image' | 'pdf' | 'other';
     localObjectUrl?: boolean;
+    fileUrl?: string;
+    analysisLoading?: boolean;
+    analysis?: any;
   }>({ open: false, loading: false, name: '', url: '', kind: 'other' });
   const idDocumentType = Form.useWatch('idDocumentType', form) || '居民身份证';
 
@@ -346,7 +350,8 @@ const Edit: React.FC = () => {
       appMessage.error('报告文件地址不存在');
       return;
     }
-    setReportPreview({ open: true, loading: true, name: file.name, url: '', kind });
+    setReportPreview({ open: true, loading: true, name: file.name, url: '', kind, fileUrl: file.url, analysisLoading: true });
+    void loadExistingReportAnalysis(file.url);
     try {
       const response = await fetch(
         `/api/patients/${encodeURIComponent(String(patientCode))}/report-files/preview?file_url=${encodeURIComponent(file.url)}`,
@@ -358,12 +363,50 @@ const Edit: React.FC = () => {
       if (!response.ok || result.code !== 200 || !result.data?.preview_url) {
         throw new Error(result.message || '报告预览失败');
       }
-      setReportPreview({
-        open: true, loading: false, name: file.name, url: result.data.preview_url, kind,
-      });
+      setReportPreview((current) => ({
+        ...current,
+        open: true,
+        loading: false,
+        name: file.name,
+        url: result.data.preview_url,
+        kind,
+        fileUrl: file.url,
+      }));
     } catch (error: any) {
       setReportPreview((current) => ({ ...current, open: false, loading: false }));
       appMessage.error(error?.message || '报告预览失败');
+    }
+  };
+
+  const loadExistingReportAnalysis = async (fileUrl: string, force = false) => {
+    if (!patientCode || !fileUrl) return;
+    setReportPreview((current) => ({ ...current, analysisLoading: true, analysis: force ? undefined : current.analysis }));
+    const endpoint = `/api/patients/${encodeURIComponent(String(patientCode))}/report-files/analysis`;
+    const headers = { 'Authorization': `Bearer ${localStorage.getItem('token')}` };
+    try {
+      if (!force) {
+        const response = await fetch(`${endpoint}?file_url=${encodeURIComponent(fileUrl)}`, { headers });
+        const result = await response.json();
+        if (!response.ok || result.code !== 200) throw new Error(result.message || '读取AI分析失败');
+        if (result.data?.status === 'completed') {
+          setReportPreview((current) => ({ ...current, analysisLoading: false, analysis: result.data }));
+          return;
+        }
+      }
+      const response = await fetch(`${endpoint}${force ? '?force=1' : ''}`, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file_url: fileUrl }),
+      });
+      const result = await response.json();
+      if (!response.ok || result.code !== 200) throw new Error(result.message || '报告分析失败');
+      setReportPreview((current) => ({ ...current, analysisLoading: false, analysis: result.data }));
+    } catch (error: any) {
+      setReportPreview((current) => ({
+        ...current,
+        analysisLoading: false,
+        analysis: { status: 'failed', error_message: error?.message || '报告分析失败，请稍后重试' },
+      }));
     }
   };
 
@@ -714,37 +757,78 @@ const Edit: React.FC = () => {
         open={reportPreview.open}
         onCancel={closeReportPreview}
         footer={null}
-        width="min(960px, 92vw)"
+        width="min(1320px, 96vw)"
+        className="patient-report-modal"
         destroyOnClose
       >
-        <Spin spinning={reportPreview.loading}>
-          {!reportPreview.loading && reportPreview.kind === 'image' && reportPreview.url && (
-            <div style={{ textAlign: 'center', maxHeight: '72vh', overflow: 'auto' }}>
-              <img
-                src={reportPreview.url}
-                alt={reportPreview.name}
-                style={{ display: 'block', maxWidth: '100%', height: 'auto', margin: '0 auto' }}
-              />
-            </div>
-          )}
-          {!reportPreview.loading && reportPreview.kind === 'pdf' && reportPreview.url && (
-            <iframe
-              src={reportPreview.url}
-              title={reportPreview.name}
-              style={{ width: '100%', height: '72vh', border: 0 }}
-            />
-          )}
-          {!reportPreview.loading && reportPreview.kind === 'other' && reportPreview.url && (
-            <div style={{ textAlign: 'center', padding: 32 }}>
-              当前浏览器不支持直接预览此文件格式。
-              <div style={{ marginTop: 16 }}>
-                <Button type="primary" onClick={() => window.open(reportPreview.url, '_blank', 'noopener,noreferrer')}>
-                  打开文件
-                </Button>
+        <div className="patient-report-layout">
+          <section className="patient-report-original" aria-label="报告原图">
+            <div className="patient-report-panel-title">报告原图</div>
+            {reportPreview.loading && <Skeleton.Image active className="patient-report-skeleton-image" />}
+            {!reportPreview.loading && reportPreview.kind === 'image' && reportPreview.url && (
+              <div className="patient-report-media">
+                <img src={reportPreview.url} alt={`${reportPreview.name} 原图`} />
               </div>
+            )}
+            {!reportPreview.loading && reportPreview.kind === 'pdf' && reportPreview.url && (
+              <iframe src={reportPreview.url} title={`${reportPreview.name} 原文`} className="patient-report-pdf" />
+            )}
+            {!reportPreview.loading && reportPreview.kind === 'other' && reportPreview.url && (
+              <Empty description="当前浏览器不支持直接预览此文件格式">
+                <Button type="primary" onClick={() => window.open(reportPreview.url, '_blank', 'noopener,noreferrer')}>打开文件</Button>
+              </Empty>
+            )}
+          </section>
+          <section className="patient-report-analysis" aria-label="AI分析">
+            <div className="patient-report-analysis-head">
+              <Space>
+                <RobotOutlined />
+                <span className="patient-report-panel-title">AI 报告分析</span>
+                {reportPreview.analysis?.status === 'completed' && <Tag color="success">已完成</Tag>}
+              </Space>
+              {reportPreview.fileUrl && (
+                <Button
+                  type="link"
+                  icon={<SyncOutlined spin={reportPreview.analysisLoading} />}
+                  disabled={reportPreview.analysisLoading}
+                  onClick={() => loadExistingReportAnalysis(reportPreview.fileUrl!, true)}
+                >
+                  重新分析
+                </Button>
+              )}
             </div>
-          )}
-        </Spin>
+            {reportPreview.localObjectUrl ? (
+              <Alert type="info" showIcon message="请先保存患者信息，上传完成后系统会生成AI分析。" />
+            ) : reportPreview.analysisLoading ? (
+              <div className="patient-report-analysis-loading" aria-live="polite">
+                <Skeleton active paragraph={{ rows: 8 }} />
+                <Typography.Text type="secondary">AI 正在识别报告类型并整理内容，请稍候…</Typography.Text>
+              </div>
+            ) : reportPreview.analysis?.status === 'completed' ? (
+              <>
+                <Typography.Paragraph className="patient-report-analysis-text">{reportPreview.analysis.content}</Typography.Paragraph>
+                <div className="patient-report-analysis-meta">
+                  {reportPreview.analysis.model && <span>模型：{reportPreview.analysis.model}</span>}
+                  {reportPreview.analysis.analyzed_at && <span>分析时间：{reportPreview.analysis.analyzed_at}</span>}
+                </div>
+              </>
+            ) : reportPreview.analysis?.status === 'failed' ? (
+              <Alert
+                type="error"
+                showIcon
+                message="AI 分析未完成"
+                description={reportPreview.analysis.error_message}
+                action={<Button onClick={() => reportPreview.fileUrl && loadExistingReportAnalysis(reportPreview.fileUrl, true)}>重试</Button>}
+              />
+            ) : <Empty description="等待AI分析" />}
+            <Alert
+              className="patient-report-disclaimer"
+              type="info"
+              showIcon
+              message="AI内容仅帮助阅读原报告，不能替代医生诊断，请以原报告和医生判断为准。"
+            />
+          </section>
+        </div>
       </Modal>
     </div>
   );
