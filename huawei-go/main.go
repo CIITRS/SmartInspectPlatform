@@ -1113,6 +1113,9 @@ func main() {
 			appointments.GET("", func(c context.Context, ctx *app.RequestContext) {
 				handlers.HandleAdminListMailAppointments(ctx, db)
 			})
+			appointments.GET("/samples", func(c context.Context, ctx *app.RequestContext) {
+				handlers.HandleAdminListSampleLogistics(ctx, db)
+			})
 			appointments.PUT("/:id", func(c context.Context, ctx *app.RequestContext) {
 				handlers.HandleAdminUpdateMailAppointment(ctx, db)
 			})
@@ -1180,6 +1183,12 @@ func main() {
 			})
 			uni.GET("/packages", func(c context.Context, ctx *app.RequestContext) {
 				handlers.HandleUniGetMyPackages(ctx, db)
+			})
+			uni.GET("/package-options", func(c context.Context, ctx *app.RequestContext) {
+				handlers.HandleUniGetPackageOptions(ctx, db)
+			})
+			uni.POST("/package-applications", func(c context.Context, ctx *app.RequestContext) {
+				handlers.HandleUniApplyPackage(ctx, db)
 			})
 			uni.POST("/sample-box-request", func(c context.Context, ctx *app.RequestContext) {
 				handlers.HandleUniCreateSampleBoxRequest(ctx, db)

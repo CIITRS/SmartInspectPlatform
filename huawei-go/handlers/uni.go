@@ -960,10 +960,12 @@ func HandleUniGetMyPackages(c *app.RequestContext, db *sql.DB) {
 	phone, _ := c.Get("miniapp_phone")
 	phoneStr, _ := phone.(string)
 
-	query := `SELECT so.id, so.sale_order_no, so.first_detection_date, so.payment_status, so.status,
-		so.total_amount, so.created_at, sp.id, sp.name, sp.detection_count, sp.interval_days, sp.price,
+	query := `SELECT so.id, so.sale_order_no, so.first_detection_date, so.status,
+		so.created_at, sp.id, sp.name, sp.detection_count, sp.interval_days,
 		p.id, p.name, p.phone, p.address,
-		dp.id, dp.detection_date, dp.detection_number, dp.status
+		dp.id, dp.detection_date, dp.detection_number, dp.status,
+		(SELECT MIN(ds.sample_created_at) FROM detect_sample ds
+		 WHERE ds.patient_id = so.detect_patient_id AND ds.sale_package_id = so.sale_package_id) AS first_scan_at
 		FROM sale_order so
 		JOIN sale_package sp ON so.sale_package_id = sp.id
 		JOIN detect_patient p ON so.detect_patient_id = p.id
@@ -985,17 +987,16 @@ func HandleUniGetMyPackages(c *app.RequestContext, db *sql.DB) {
 
 	for rows.Next() {
 		var orderID, packageID, detectionCount, intervalDays, patientID int
-		var orderNo, paymentStatus, orderStatus, packageName, patientName, patientPhone string
-		var firstDetectionDate, orderCreatedAt, detectionDate sql.NullTime
-		var totalAmount, price float64
+		var orderNo, orderStatus, packageName, patientName, patientPhone string
+		var firstDetectionDate, orderCreatedAt, detectionDate, firstScanAt sql.NullTime
 		var patientAddress sql.NullString
 		var planID, detectionNumber sql.NullInt64
 		var planStatus sql.NullString
 
-		if err := rows.Scan(&orderID, &orderNo, &firstDetectionDate, &paymentStatus, &orderStatus,
-			&totalAmount, &orderCreatedAt, &packageID, &packageName, &detectionCount, &intervalDays, &price,
+		if err := rows.Scan(&orderID, &orderNo, &firstDetectionDate, &orderStatus,
+			&orderCreatedAt, &packageID, &packageName, &detectionCount, &intervalDays,
 			&patientID, &patientName, &patientPhone, &patientAddress,
-			&planID, &detectionDate, &detectionNumber, &planStatus); err != nil {
+			&planID, &detectionDate, &detectionNumber, &planStatus, &firstScanAt); err != nil {
 			log.Printf("Scan my packages error: %v", err)
 			continue
 		}
@@ -1006,14 +1007,11 @@ func HandleUniGetMyPackages(c *app.RequestContext, db *sql.DB) {
 				"id":                  orderID,
 				"order_id":            orderID,
 				"order_no":            orderNo,
-				"payment_status":      paymentStatus,
 				"status":              orderStatus,
-				"total_amount":        totalAmount,
 				"package_id":          packageID,
 				"package_name":        packageName,
 				"detection_count":     detectionCount,
 				"interval_days":       intervalDays,
-				"price":               price,
 				"patient_id":          patientID,
 				"patient_name":        patientName,
 				"patient_phone":       patientPhone,
@@ -1028,6 +1026,9 @@ func HandleUniGetMyPackages(c *app.RequestContext, db *sql.DB) {
 			}
 			if patientAddress.Valid {
 				item["patient_address"] = patientAddress.String
+			}
+			if firstScanAt.Valid {
+				item["first_scan_at"] = firstScanAt.Time.Format("2006-01-02 15:04:05")
 			}
 			orderMap[orderID] = item
 			orderIDs = append(orderIDs, orderID)
@@ -1047,6 +1048,9 @@ func HandleUniGetMyPackages(c *app.RequestContext, db *sql.DB) {
 					item["next_plan_id"] = int(planID.Int64)
 				}
 			}
+			if detectionNumber.Int64 == 1 && firstScanAt.Valid {
+				plan["first_scan_at"] = firstScanAt.Time.Format("2006-01-02 15:04:05")
+			}
 			if planStatus.Valid {
 				plan["status"] = planStatus.String
 			}
@@ -1060,6 +1064,113 @@ func HandleUniGetMyPackages(c *app.RequestContext, db *sql.DB) {
 	}
 
 	c.JSON(consts.StatusOK, ApiResponse{Code: 200, Success: true, Message: "获取成功", Data: utils.H{"list": list, "total": len(list)}})
+}
+
+// HandleUniGetPackageOptions 返回患者可申请的套餐和癌型。
+func HandleUniGetPackageOptions(c *app.RequestContext, db *sql.DB) {
+	packages := []utils.H{}
+	if rows, err := db.Query(`SELECT id, name, detection_count, interval_days, COALESCE(description, '')
+		FROM sale_package WHERE status = 'active' ORDER BY id`); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var id, detectionCount, intervalDays int
+			var name, description string
+			if rows.Scan(&id, &name, &detectionCount, &intervalDays, &description) == nil {
+				packages = append(packages, utils.H{
+					"id": id, "name": name, "detection_count": detectionCount,
+					"interval_days": intervalDays, "description": description,
+				})
+			}
+		}
+	}
+	cancerTypes := []utils.H{}
+	if rows, err := db.Query(`SELECT id, name FROM setting_cancer_type WHERE is_active = 1 ORDER BY id`); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var id int
+			var name string
+			if rows.Scan(&id, &name) == nil {
+				cancerTypes = append(cancerTypes, utils.H{"id": id, "name": name})
+			}
+		}
+	}
+	c.JSON(consts.StatusOK, ApiResponse{Code: 200, Success: true, Message: "获取成功", Data: utils.H{
+		"packages": packages, "cancer_types": cancerTypes,
+	}})
+}
+
+// HandleUniApplyPackage 由患者提交套餐申请，销售随后配置每一次检测时间。
+func HandleUniApplyPackage(c *app.RequestContext, db *sql.DB) {
+	patientID, _, err := getMiniappPatientSubject(c, db)
+	if err != nil {
+		c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: "未找到患者信息", Data: nil})
+		return
+	}
+	var req struct {
+		PackageID    int `json:"package_id"`
+		CancerTypeID int `json:"cancer_type_id"`
+	}
+	if err := c.Bind(&req); err != nil || req.PackageID <= 0 || req.CancerTypeID <= 0 {
+		c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: "请选择套餐和癌型", Data: nil})
+		return
+	}
+	var detectionCount int
+	if err := db.QueryRow(`SELECT detection_count FROM sale_package WHERE id = ? AND status = 'active'`, req.PackageID).Scan(&detectionCount); err != nil {
+		c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: "套餐不存在或已停用", Data: nil})
+		return
+	}
+	var duplicate int
+	_ = db.QueryRow(`SELECT COUNT(*) FROM sale_order
+		WHERE detect_patient_id = ? AND sale_package_id = ? AND status IN ('pending', 'pending_config', 'active')`,
+		patientID, req.PackageID).Scan(&duplicate)
+	if duplicate > 0 {
+		c.JSON(consts.StatusConflict, ApiResponse{Code: 409, Success: false, Message: "该套餐已提交，请勿重复申请", Data: nil})
+		return
+	}
+	var idCard, salesPerson string
+	if err := db.QueryRow(`SELECT COALESCE(id_card, ''), COALESCE(sales_person, '') FROM detect_patient WHERE id = ?`, patientID).Scan(&idCard, &salesPerson); err != nil {
+		c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: "患者信息不存在", Data: nil})
+		return
+	}
+	var salesPersonID sql.NullInt64
+	_ = db.QueryRow(`SELECT id FROM base_manage_user
+		WHERE employee_id = ? OR username = ? OR real_name = ? OR CAST(id AS CHAR) = ? ORDER BY id LIMIT 1`,
+		salesPerson, salesPerson, salesPerson, salesPerson).Scan(&salesPersonID)
+
+	tx, err := db.Begin()
+	if err != nil {
+		c.JSON(consts.StatusInternalServerError, ApiResponse{Code: 500, Success: false, Message: "提交失败", Data: nil})
+		return
+	}
+	defer tx.Rollback()
+	orderNo := generateOrderNo()
+	var salesArg interface{}
+	if salesPersonID.Valid {
+		salesArg = salesPersonID.Int64
+	}
+	result, err := tx.Exec(`INSERT INTO sale_order
+		(sale_order_no, detect_patient_id, detect_patient_id_card, sale_package_id, setting_cancer_type_id,
+		 payment_method, payment_status, sales_person_id, total_amount, status)
+		VALUES (?, ?, ?, ?, ?, 'offline', 'offline', ?, 0, 'pending_config')`,
+		orderNo, patientID, idCard, req.PackageID, req.CancerTypeID, salesArg)
+	if err != nil {
+		c.JSON(consts.StatusInternalServerError, ApiResponse{Code: 500, Success: false, Message: "提交失败", Data: nil})
+		return
+	}
+	orderID, _ := result.LastInsertId()
+	for i := 1; i <= detectionCount; i++ {
+		if _, err := tx.Exec(`INSERT INTO sale_detection_plan
+			(sale_order_id, detect_patient_id, detection_date, detection_number, status)
+			VALUES (?, ?, NULL, ?, 'scheduled')`, orderID, patientID, i); err != nil {
+			c.JSON(consts.StatusInternalServerError, ApiResponse{Code: 500, Success: false, Message: "生成检测计划失败", Data: nil})
+			return
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		c.JSON(consts.StatusInternalServerError, ApiResponse{Code: 500, Success: false, Message: "提交失败", Data: nil})
+		return
+	}
+	c.JSON(consts.StatusOK, ApiResponse{Code: 200, Success: true, Message: "套餐申请已提交，请等待客户经理配置检测时间", Data: utils.H{"order_id": orderID, "order_no": orderNo}})
 }
 
 // HandleUniCreateSampleBoxRequest 预约邮寄采样盒。

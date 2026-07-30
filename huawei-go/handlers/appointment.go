@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/common/utils"
@@ -176,6 +177,110 @@ func HandleAdminListMailAppointments(c *app.RequestContext, db *sql.DB) {
 		return
 	}
 
+	c.JSON(consts.StatusOK, ApiResponse{Code: 200, Success: true, Message: "获取成功", Data: utils.H{"list": list, "total": total}})
+}
+
+func sampleLocationText(sampleStatus, expressStatus, direction string) string {
+	if expressStatus != "" && expressStatus != "delivered" {
+		if direction == expressDirectionOutbound {
+			return "报告/物料寄往患者途中"
+		}
+		return "患者样本寄往实验室途中"
+	}
+	switch sampleStatus {
+	case "created", "collected":
+		return "患者处，待寄回"
+	case "received":
+		return "实验室已签收"
+	case "testing":
+		return "实验室检测中"
+	case "tested", "completed":
+		return "检测已完成"
+	default:
+		return "待确认"
+	}
+}
+
+// HandleAdminListSampleLogistics 聚合展示患者样本当前所在环节。
+func HandleAdminListSampleLogistics(c *app.RequestContext, db *sql.DB) {
+	current, _ := strconv.Atoi(c.DefaultQuery("current", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "20"))
+	if current <= 0 {
+		current = 1
+	}
+	if pageSize <= 0 || pageSize > 200 {
+		pageSize = 20
+	}
+	conditions := []string{"1=1"}
+	args := []interface{}{}
+	if userID, ok := GetUserID(c); ok {
+		roleNames := getUserRoleNames(db, userID)
+		if hasRoleName(roleNames, "销售") && !hasRoleName(roleNames, "管理员", "IT") {
+			conditions = append(conditions, "p.sales_person = ?")
+			args = append(args, salesPersonCodeForUser(db, userID))
+		}
+	}
+	if keyword := strings.TrimSpace(c.Query("keyword")); keyword != "" {
+		conditions = append(conditions, "(p.name LIKE ? OR p.patient_code LIKE ? OR p.phone LIKE ? OR s.sample_code LIKE ? OR e.tracking_number LIKE ?)")
+		like := "%" + keyword + "%"
+		args = append(args, like, like, like, like, like)
+	}
+	whereSQL := strings.Join(conditions, " AND ")
+	joinSQL := ` FROM detect_sample s
+		JOIN detect_patient p ON p.id = s.patient_id
+		LEFT JOIN detect_sample_express e ON e.id = (
+			SELECT e2.id FROM detect_sample_express e2
+			WHERE e2.sample_id = s.id ORDER BY e2.updated_at DESC, e2.id DESC LIMIT 1
+		)`
+	var total int
+	if err := db.QueryRow(`SELECT COUNT(*)`+joinSQL+` WHERE `+whereSQL, args...).Scan(&total); err != nil {
+		c.JSON(consts.StatusInternalServerError, ApiResponse{Code: 500, Success: false, Message: "查询样本物流失败", Data: nil})
+		return
+	}
+	queryArgs := append([]interface{}{}, args...)
+	queryArgs = append(queryArgs, pageSize, (current-1)*pageSize)
+	rows, err := db.Query(`SELECT s.id, s.sample_code, COALESCE(s.sample_status, ''), s.sample_created_at,
+			p.name, p.patient_code, p.phone,
+			COALESCE(e.id, 0), COALESCE(e.direction, ''), COALESCE(e.express_company, ''),
+			COALESCE(e.tracking_number, ''), COALESCE(e.status, ''), COALESCE(e.latest_event_status, ''),
+			e.delivered_at, e.updated_at
+		`+joinSQL+` WHERE `+whereSQL+`
+		ORDER BY s.sample_created_at DESC LIMIT ? OFFSET ?`, queryArgs...)
+	if err != nil {
+		log.Printf("List sample logistics error: %v", err)
+		c.JSON(consts.StatusInternalServerError, ApiResponse{Code: 500, Success: false, Message: "查询样本物流失败", Data: nil})
+		return
+	}
+	defer rows.Close()
+	list := []utils.H{}
+	for rows.Next() {
+		var sampleID, expressID int
+		var sampleCode, sampleStatus, patientName, patientCode, patientPhone string
+		var direction, company, trackingNumber, expressStatus, latestEvent string
+		var createdAt time.Time
+		var deliveredAt, expressUpdatedAt sql.NullTime
+		if err := rows.Scan(&sampleID, &sampleCode, &sampleStatus, &createdAt,
+			&patientName, &patientCode, &patientPhone, &expressID, &direction, &company,
+			&trackingNumber, &expressStatus, &latestEvent, &deliveredAt, &expressUpdatedAt); err != nil {
+			continue
+		}
+		item := utils.H{
+			"id": sampleID, "sample_code": sampleCode, "sample_status": sampleStatus,
+			"patient_name": patientName, "patient_code": patientCode, "patient_phone": patientPhone,
+			"express_id": expressID, "direction": direction, "express_company": company,
+			"tracking_number": trackingNumber, "express_status": expressStatus,
+			"latest_event_status": latestEvent,
+			"current_location":    sampleLocationText(sampleStatus, expressStatus, direction),
+			"created_at":          createdAt.Format("2006-01-02 15:04:05"),
+		}
+		if deliveredAt.Valid {
+			item["delivered_at"] = deliveredAt.Time.Format("2006-01-02 15:04:05")
+		}
+		if expressUpdatedAt.Valid {
+			item["express_updated_at"] = expressUpdatedAt.Time.Format("2006-01-02 15:04:05")
+		}
+		list = append(list, item)
+	}
 	c.JSON(consts.StatusOK, ApiResponse{Code: 200, Success: true, Message: "获取成功", Data: utils.H{"list": list, "total": total}})
 }
 

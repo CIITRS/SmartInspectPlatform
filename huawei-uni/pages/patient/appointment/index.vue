@@ -1,8 +1,8 @@
 <template>
   <view class="page-container">
     <view class="page-header">
-      <text class="page-title">预约检测</text>
-      <text class="page-desc">预约试剂盒邮寄，或联系专属客户经理</text>
+      <text class="page-title">物流中心</text>
+      <text class="page-desc">申请试剂盒，并查看寄出样本当前所在环节</text>
     </view>
 
     <view class="action-grid">
@@ -14,6 +14,31 @@
         <text class="action-title">联系专属客户经理</text>
         <text class="action-desc">{{ managerText }}</text>
       </button>
+    </view>
+
+    <view class="records-section">
+      <view class="section-header">
+        <text class="section-title">我的样本位置</text>
+      </view>
+      <view v-if="samples.length === 0" class="empty-container">
+        <text class="empty-text">暂无寄出样本</text>
+      </view>
+      <view v-for="sample in samples" :key="sample.id" class="request-card">
+        <view class="request-header">
+          <text class="request-name">{{ sample.sample_code }}</text>
+          <text class="status-tag" :class="{ shipped: sample.express_status === 'delivered' }">
+            {{ sampleLocation(sample) }}
+          </text>
+        </view>
+        <view class="request-row">
+          <text class="row-label">运单</text>
+          <text class="row-value">{{ sample.express_company || '' }} {{ sample.tracking_number || '待填写' }}</text>
+        </view>
+        <view v-if="sample.latest_event_status" class="request-row address-row">
+          <text class="row-label">最新动态</text>
+          <text class="row-value">{{ sample.latest_event_status }}</text>
+        </view>
+      </view>
     </view>
 
     <view class="records-section">
@@ -64,7 +89,8 @@ export default {
       loading: false,
       managerLoading: false,
       manager: null,
-      requests: []
+      requests: [],
+      samples: []
     }
   },
   computed: {
@@ -74,15 +100,37 @@ export default {
     }
   },
   onLoad() {
-    uni.setNavigationBarTitle({ title: '预约检测' })
+    uni.setNavigationBarTitle({ title: '物流中心' })
     this.loadRequests()
+    this.loadSamples()
   },
   onShow() {
     this.loadRequests()
+    this.loadSamples()
   },
   methods: {
     goToMailForm() {
       uni.navigateTo({ url: '/pages/patient/appointment-mail/index' })
+    },
+    async loadSamples() {
+      try {
+        const response = await uniAPI.getMailSamples()
+        this.samples = response.data?.list || []
+      } catch (error) {
+        console.error('Load sample logistics failed:', error)
+      }
+    },
+    sampleLocation(sample) {
+      if (sample.express_status && sample.express_status !== 'delivered') return '寄往实验室途中'
+      const map = {
+        created: '患者处，待寄回',
+        collected: '患者处，待寄回',
+        received: '实验室已签收',
+        testing: '实验室检测中',
+        tested: '检测已完成',
+        completed: '检测已完成'
+      }
+      return map[sample.sample_status] || '待确认'
     },
     async loadRequests() {
       this.loading = true
