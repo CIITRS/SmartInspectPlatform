@@ -1,6 +1,7 @@
-import { CloudDownloadOutlined, CodeOutlined, CopyrightOutlined, InfoCircleOutlined, ReloadOutlined } from '@ant-design/icons';
-import { Alert, App, Button, Card, Divider, List, Modal, Space, Spin, Tag, Typography } from 'antd';
-import React, { useEffect, useState } from 'react';
+import { CheckCircleOutlined, CloudDownloadOutlined, CodeOutlined, CopyrightOutlined, InfoCircleOutlined, ReloadOutlined } from '@ant-design/icons';
+import { Alert, App, Button, Card, Divider, List, Modal, Progress, Space, Spin, Steps, Tag, Typography } from 'antd';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import './index.less';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -14,7 +15,33 @@ interface VersionInfo {
   update_available?: boolean;
   upgrade_supported?: boolean;
   upgrade_running?: boolean;
+  upgrade_status?: UpgradeStatus;
 }
+
+interface UpgradeStatus {
+  version?: string;
+  state: 'idle' | 'running' | 'completed' | 'failed';
+  current_step: number;
+  total_steps: number;
+  progress: number;
+  message: string;
+  started_at?: string;
+  updated_at?: string;
+}
+
+const upgradeSteps = [
+  '检查环境',
+  '获取发布包',
+  '备份当前版本',
+  '替换系统文件',
+  '重启服务',
+  '健康检查',
+  '升级完成',
+];
+
+const idleUpgradeStatus: UpgradeStatus = {
+  state: 'idle', current_step: 0, total_steps: upgradeSteps.length, progress: 0, message: '尚未开始升级',
+};
 
 const localVersionInfo: VersionInfo = {
   current_version: __APP_VERSION__,
@@ -28,6 +55,11 @@ const About: React.FC = () => {
   const [upgrading, setUpgrading] = useState(false);
   const [error, setError] = useState('');
   const [versionInfo, setVersionInfo] = useState<VersionInfo>(localVersionInfo);
+  const [upgradeModalOpen, setUpgradeModalOpen] = useState(false);
+  const [upgradeStatus, setUpgradeStatus] = useState<UpgradeStatus>(idleUpgradeStatus);
+  const [upgradeLog, setUpgradeLog] = useState<string[]>([]);
+  const [upgradeConnectionHint, setUpgradeConnectionHint] = useState('');
+  const terminalNoticeRef = useRef('');
 
   const openSourceComponents = [
     { name: 'Go', url: 'https://go.dev/' },
@@ -56,6 +88,13 @@ const About: React.FC = () => {
         release_date: result.data?.release_date || current.release_date,
         build_commit: result.data?.build_commit || current.build_commit,
       }));
+      if (result.data?.upgrade_status) {
+        setUpgradeStatus(result.data.upgrade_status);
+        if (result.data.upgrade_status.state === 'running') {
+          setUpgrading(true);
+          setUpgradeModalOpen(true);
+        }
+      }
     } catch (requestError: any) {
       setError(requestError?.message || 'GitHub 版本读取失败');
     } finally {
@@ -67,6 +106,43 @@ const About: React.FC = () => {
     fetchVersion();
   }, []);
 
+  const fetchUpgradeStatus = useCallback(async () => {
+    try {
+      const response = await fetch('/api/system/version/upgrade/status', { cache: 'no-store' });
+      const result = await response.json();
+      if (!response.ok || result.code !== 200 || !result.data?.status) {
+        throw new Error(result.message || '升级进度读取失败');
+      }
+      const nextStatus = result.data.status as UpgradeStatus;
+      setUpgradeStatus(nextStatus);
+      setUpgradeLog(Array.isArray(result.data.log_tail) ? result.data.log_tail : []);
+      setUpgradeConnectionHint('');
+      if (nextStatus.state === 'completed' || nextStatus.state === 'failed') {
+        setUpgrading(false);
+        const noticeKey = `${nextStatus.version}-${nextStatus.state}-${nextStatus.updated_at}`;
+        if (terminalNoticeRef.current !== noticeKey) {
+          terminalNoticeRef.current = noticeKey;
+          if (nextStatus.state === 'completed') {
+            message.success('系统升级完成，当前服务运行正常');
+            window.setTimeout(() => fetchVersion(), 1200);
+          } else {
+            message.error('系统升级失败，请根据当前步骤和日志处理后重试');
+          }
+        }
+      }
+    } catch (_requestError) {
+      // 服务重启期间短暂断连是正常现象，保留当前步骤并继续轮询。
+      setUpgradeConnectionHint('服务正在切换，暂时无法读取进度；页面会自动继续尝试连接。');
+    }
+  }, [message]);
+
+  useEffect(() => {
+    if (!upgrading) return undefined;
+    void fetchUpgradeStatus();
+    const timer = window.setInterval(fetchUpgradeStatus, 2000);
+    return () => window.clearInterval(timer);
+  }, [fetchUpgradeStatus, upgrading]);
+
   const startUpgrade = () => {
     if (!versionInfo?.latest_version) return;
     Modal.confirm({
@@ -75,7 +151,14 @@ const About: React.FC = () => {
       okText: '开始升级',
       cancelText: '取消',
       onOk: async () => {
-        setUpgrading(true);
+        setUpgradeModalOpen(true);
+        setUpgradeStatus({
+          state: 'running', current_step: 1, total_steps: upgradeSteps.length, progress: 5,
+          version: versionInfo.latest_version, message: '正在启动升级任务',
+        });
+        setUpgradeLog([]);
+        setUpgradeConnectionHint('');
+        terminalNoticeRef.current = '';
         try {
           const response = await fetch('/api/system/version/upgrade', {
             method: 'POST',
@@ -86,13 +169,14 @@ const About: React.FC = () => {
           if (!response.ok || (result.code !== 200 && result.code !== 202)) {
             throw new Error(result.message || '升级启动失败');
           }
+          setUpgrading(true);
           message.success(result.message || '升级任务已启动');
-          await fetchVersion();
+          await fetchUpgradeStatus();
         } catch (requestError: any) {
+          setUpgrading(false);
+          setUpgradeStatus((current) => ({ ...current, state: 'failed', message: requestError?.message || '升级启动失败' }));
           message.error(requestError?.message || '升级启动失败');
           throw requestError;
-        } finally {
-          setUpgrading(false);
         }
       },
     });
@@ -151,8 +235,12 @@ const About: React.FC = () => {
                   {versionInfo.latest_notes && <Paragraph style={{ whiteSpace: 'pre-wrap' }}>{versionInfo.latest_notes}</Paragraph>}
                   {versionInfo.update_available ? (
                     versionInfo.upgrade_supported ? (
-                      <Button type="primary" icon={<CloudDownloadOutlined />} loading={upgrading || versionInfo.upgrade_running} onClick={startUpgrade}>
-                        {versionInfo.upgrade_running ? '正在升级' : `升级到 ${versionInfo.latest_version}`}
+                      <Button
+                        type="primary"
+                        icon={<CloudDownloadOutlined />}
+                        onClick={() => (upgrading || versionInfo.upgrade_running ? setUpgradeModalOpen(true) : startUpgrade())}
+                      >
+                        {versionInfo.upgrade_running || upgrading ? '查看升级进度' : `升级到 ${versionInfo.latest_version}`}
                       </Button>
                     ) : (
                       <Alert type="info" showIcon message="发现新版本，但当前运行环境未启用自动升级，请按 README 的部署步骤手动升级。" />
@@ -166,6 +254,57 @@ const About: React.FC = () => {
           </Spin>
         </Space>
       </Card>
+
+      <Modal
+        title={`系统升级${upgradeStatus.version ? ` · ${upgradeStatus.version}` : ''}`}
+        open={upgradeModalOpen}
+        onCancel={() => setUpgradeModalOpen(false)}
+        width="min(920px, 94vw)"
+        className="system-upgrade-progress-modal"
+        maskClosable={!upgrading}
+        footer={[
+          upgradeStatus.state === 'failed' && (
+            <Button key="retry" type="primary" onClick={startUpgrade}>重新尝试升级</Button>
+          ),
+          <Button key="close" onClick={() => setUpgradeModalOpen(false)}>
+            {upgrading ? '后台继续，关闭窗口' : '关闭'}
+          </Button>,
+        ].filter(Boolean)}
+      >
+        <div aria-live="polite" aria-atomic="true">
+          <Progress
+            percent={upgradeStatus.progress || 0}
+            status={upgradeStatus.state === 'failed' ? 'exception' : upgradeStatus.state === 'completed' ? 'success' : 'active'}
+            strokeColor={upgradeStatus.state === 'completed' ? '#52c41a' : undefined}
+          />
+          <Steps
+            className="system-upgrade-steps"
+            current={Math.max(0, (upgradeStatus.current_step || 1) - 1)}
+            status={upgradeStatus.state === 'failed' ? 'error' : upgradeStatus.state === 'completed' ? 'finish' : 'process'}
+            responsive
+            items={upgradeSteps.map((title, index) => ({
+              title,
+              description: index + 1 === upgradeStatus.current_step ? upgradeStatus.message : undefined,
+            }))}
+          />
+          {upgradeConnectionHint && <Alert type="warning" showIcon message={upgradeConnectionHint} />}
+          {upgradeStatus.state === 'completed' && (
+            <Alert type="success" showIcon icon={<CheckCircleOutlined />} message="升级已完成" description={upgradeStatus.message} />
+          )}
+          {upgradeStatus.state === 'failed' && (
+            <Alert role="alert" type="error" showIcon message="升级未完成" description={`${upgradeStatus.message}。系统已尝试保留或恢复上一版本。`} />
+          )}
+          {upgradeStatus.state === 'running' && !upgradeConnectionHint && (
+            <Alert type="info" showIcon message={upgradeStatus.message || '升级正在进行中'} description="服务重启时页面可能短暂断开，请不要重复点击升级。" />
+          )}
+          {upgradeLog.length > 0 && (
+            <div className="system-upgrade-log" aria-label="最近升级日志">
+              <Text strong>最近日志</Text>
+              <pre>{upgradeLog.slice(-10).join('\n')}</pre>
+            </div>
+          )}
+        </div>
+      </Modal>
 
       <Divider style={{ marginTop: '24px' }}>
         <Text strong>

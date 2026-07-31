@@ -1,6 +1,9 @@
 package handlers
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 func TestCompareVersions(t *testing.T) {
 	tests := []struct {
@@ -35,5 +38,24 @@ func TestReleaseTagPattern(t *testing.T) {
 		if releaseTagPattern.MatchString(tag) {
 			t.Errorf("expected %q to be invalid", tag)
 		}
+	}
+}
+
+func TestSystemUpgradeStatusPersistsAcrossProcessRestart(t *testing.T) {
+	statusPath := filepath.Join(t.TempDir(), "upgrade-status.json")
+	t.Setenv("SYSTEM_UPGRADE_STATUS_FILE", statusPath)
+	want := systemUpgradeStatus{
+		Version: "v0.2.4", State: "running", CurrentStep: 4, Progress: 57,
+		Message: "正在替换系统文件", StartedAt: "2026-08-01T00:00:00Z",
+	}
+	if err := writeSystemUpgradeStatus(want); err != nil {
+		t.Fatalf("write upgrade status: %v", err)
+	}
+	got := readSystemUpgradeStatus()
+	if got.Version != want.Version || got.State != want.State || got.CurrentStep != want.CurrentStep || got.Progress != want.Progress {
+		t.Fatalf("unexpected persisted status: %#v", got)
+	}
+	if got.TotalSteps != systemUpgradeTotalSteps || got.UpdatedAt == "" {
+		t.Fatalf("missing normalized status metadata: %#v", got)
 	}
 }

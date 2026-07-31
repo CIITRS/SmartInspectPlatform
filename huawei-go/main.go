@@ -847,6 +847,9 @@ func main() {
 			system.POST("/version/upgrade", func(c context.Context, ctx *app.RequestContext) {
 				handlers.HandleUpgradeSystem(ctx)
 			})
+			system.GET("/version/upgrade/status", func(c context.Context, ctx *app.RequestContext) {
+				handlers.HandleGetSystemUpgradeStatus(ctx)
+			})
 			system.GET("/sms/packages", func(c context.Context, ctx *app.RequestContext) {
 				handlers.HandleGetSMSPackages(ctx, db)
 			})

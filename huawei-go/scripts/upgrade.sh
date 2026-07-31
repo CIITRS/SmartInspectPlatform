@@ -29,9 +29,25 @@ SERVICE_MANAGER=""
 SERVICE_TARGET=""
 SUPERVISORCTL=""
 SUPERVISOR_CONFIG="${SMART_INSPECT_SUPERVISOR_CONFIG:-/etc/supervisor/supervisord.conf}"
+UPGRADE_STATUS_FILE="${SMART_INSPECT_UPGRADE_STATUS_FILE:-$APP_DIR/logs/upgrade-status.json}"
+UPGRADE_STARTED_AT="${SMART_INSPECT_UPGRADE_STARTED_AT:-$(date -u '+%Y-%m-%dT%H:%M:%SZ')}"
+UPGRADE_STEP=1
 
 log() {
   printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
+}
+
+write_status() {
+  local step="$1" state="$2" message="$3" progress updated_at temporary
+  UPGRADE_STEP="$step"
+  progress=$((step * 100 / 7))
+  [[ "$state" == "completed" ]] && progress=100
+  updated_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  mkdir -p "$(dirname "$UPGRADE_STATUS_FILE")"
+  temporary="$UPGRADE_STATUS_FILE.tmp.$$"
+  printf '{"version":"%s","state":"%s","current_step":%d,"total_steps":7,"progress":%d,"message":"%s","started_at":"%s","updated_at":"%s"}\n' \
+    "$TAG" "$state" "$step" "$progress" "$message" "$UPGRADE_STARTED_AT" "$updated_at" >"$temporary"
+  mv -f "$temporary" "$UPGRADE_STATUS_FILE"
 }
 
 require_command() {
@@ -180,6 +196,7 @@ rollback() {
     fi
     restart_service || true
   fi
+  write_status "$UPGRADE_STEP" "failed" "升级失败，已尝试恢复上一版本"
   exit "$exit_code"
 }
 
@@ -276,10 +293,12 @@ trap rollback ERR
 
 detect_binary
 detect_service_manager
+write_status 1 "running" "正在检查运行环境和服务配置"
 log "Application directory: $APP_DIR"
 log "Binary target: $BINARY_TARGET"
 log "Service manager: $SERVICE_MANAGER ($SERVICE_TARGET)"
 
+write_status 2 "running" "正在获取并校验 GitHub 发布包"
 if [[ -f "$APP_DIR/go.mod" && -d "$APP_DIR/../huawei-ui" ]] &&
   git -C "$APP_DIR/.." rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   log "Upgrade mode: source build"
@@ -288,12 +307,15 @@ else
   log "Upgrade mode: verified GitHub Release"
   download_release
 fi
+write_status 2 "running" "发布包已获取并通过校验"
 
 if [[ "$CHECK_ONLY" == "--check" ]]; then
+	write_status 7 "completed" "升级检查完成，未修改运行文件"
   log "Check completed. Release, checksum, layout and service control are valid; no files were changed."
   exit 0
 fi
 
+write_status 3 "running" "正在备份当前版本"
 mkdir -p "$BACKUP_DIR"
 if [[ -f "$BINARY_TARGET" ]]; then
   cp -a "$BINARY_TARGET" "$BACKUP_DIR/$(basename "$BINARY_TARGET")"
@@ -302,6 +324,7 @@ if [[ -d "$APP_DIR/static" ]]; then
   cp -a "$APP_DIR/static" "$BACKUP_DIR/static"
 fi
 
+write_status 4 "running" "正在替换后端程序和管理端静态文件"
 UPGRADE_APPLIED=1
 install -m 0755 "$STAGE_DIR/application" "$BINARY_TARGET.new"
 mv -f "$BINARY_TARGET.new" "$BINARY_TARGET"
@@ -319,9 +342,12 @@ if [[ -f "$STAGE_DIR/upgrade.sh" ]]; then
   mv -f "$APP_DIR/scripts/upgrade.sh.new" "$APP_DIR/scripts/upgrade.sh"
 fi
 
+write_status 5 "running" "正在重启系统服务"
 restart_service
+write_status 6 "running" "服务已重启，正在执行健康检查"
 health_check
 printf '%s\n' "$TAG" >"$APP_DIR/VERSION"
 UPGRADE_APPLIED=0
 rm -rf -- "$STATIC_PREVIOUS"
+write_status 7 "completed" "升级完成，系统运行正常"
 log "Upgrade to $TAG completed successfully. Backup: $BACKUP_DIR"
