@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Form, Input, Select, Button, Card, Spin, DatePicker, App, Upload, message, Row, Col, Modal, Alert, Empty, Skeleton, Space, Tag, Typography } from 'antd';
+import { Form, Input, Select, Button, Card, Spin, DatePicker, App, Upload, message, Row, Col, Modal, Alert, Descriptions, Empty, Skeleton, Space, Tag, Typography } from 'antd';
 import { useParams, useNavigate, useModel } from '@umijs/max';
 import { getPatientDetail, updatePatient } from '@/services/api';
 import dayjs from 'dayjs'; // 引入 dayjs
@@ -757,13 +757,13 @@ const Edit: React.FC = () => {
         open={reportPreview.open}
         onCancel={closeReportPreview}
         footer={null}
-        width="min(1320px, 96vw)"
+        width="min(1500px, 97vw)"
         className="patient-report-modal"
         destroyOnClose
       >
         <div className="patient-report-layout">
           <section className="patient-report-original" aria-label="报告原图">
-            <div className="patient-report-panel-title">报告原图</div>
+            <div className="patient-report-original-head"><span className="patient-report-panel-title">报告原件</span></div>
             {reportPreview.loading && <Skeleton.Image active className="patient-report-skeleton-image" />}
             {!reportPreview.loading && reportPreview.kind === 'image' && reportPreview.url && (
               <div className="patient-report-media">
@@ -805,13 +805,20 @@ const Edit: React.FC = () => {
                 <Typography.Text type="secondary">AI 正在识别报告类型并整理内容，请稍候…</Typography.Text>
               </div>
             ) : reportPreview.analysis?.status === 'completed' ? (
-              <>
+              <div className="patient-report-analysis-result">
+                <Descriptions bordered size="small" column={1} className="patient-report-fields">
+                  <Descriptions.Item label="报告类型">{reportPreview.analysis.report_type || '未识别'}</Descriptions.Item>
+                  <Descriptions.Item label="医院">{reportPreview.analysis.hospital || '未识别'}</Descriptions.Item>
+                  <Descriptions.Item label="检查时间">{reportPreview.analysis.examination_time || '未识别'}</Descriptions.Item>
+                  <Descriptions.Item label="检查项目">{reportPreview.analysis.examination_item || '未识别'}</Descriptions.Item>
+                </Descriptions>
+                <Typography.Title level={5}>内容摘要</Typography.Title>
                 <Typography.Paragraph className="patient-report-analysis-text">{reportPreview.analysis.content}</Typography.Paragraph>
                 <div className="patient-report-analysis-meta">
                   {reportPreview.analysis.model && <span>模型：{reportPreview.analysis.model}</span>}
                   {reportPreview.analysis.analyzed_at && <span>分析时间：{reportPreview.analysis.analyzed_at}</span>}
                 </div>
-              </>
+              </div>
             ) : reportPreview.analysis?.status === 'failed' ? (
               <Alert
                 type="error"
@@ -821,12 +828,6 @@ const Edit: React.FC = () => {
                 action={<Button onClick={() => reportPreview.fileUrl && loadExistingReportAnalysis(reportPreview.fileUrl, true)}>重试</Button>}
               />
             ) : <Empty description="等待AI分析" />}
-            <Alert
-              className="patient-report-disclaimer"
-              type="info"
-              showIcon
-              message="AI内容仅帮助阅读原报告，不能替代医生诊断，请以原报告和医生判断为准。"
-            />
           </section>
         </div>
       </Modal>

@@ -32,12 +32,17 @@ var (
 	httpClient          *http.Client
 )
 
-const defaultReportAnalysisPrompt = `你是华微智检医疗科技的报告信息整理助手。请严格按以下步骤处理患者上传的报告：
-1. 先判断“报告类型”：检查/检验报告、病理报告，或无法确定；
-2. 提取并总结报告中的医院、日期、检查项目、标本、主要所见、关键数值及参考范围、结论/诊断原文；无法辨认的内容明确写“无法辨认”，不得猜测；
-3. 对异常标记仅做客观归纳，不作诊断，不判断良恶性，不提供治疗、用药、手术、放化疗方案；
-4. 使用“报告类型、内容摘要、需要关注的信息、温馨提示”四个小标题，语言简洁、专业、温和；
-5. 结尾固定提示：本总结仅用于帮助阅读原报告，不能替代医生诊断。请携带完整报告前往正规医院，由医生结合病史和其他检查综合判断。`
+const defaultReportAnalysisPrompt = `你是华微智检医疗科技的医疗报告信息录入助手。请尽最大可能准确读取患者上传报告中清晰可见的文字，不得省略可辨认的重要信息，也不得猜测模糊内容。
+请先识别报告属于“检查/检验报告”“病理报告”或“无法确定”，然后提取医院、科室、患者基本信息、报告编号、检查/采样/送检/报告日期、检查项目、标本、主要所见、全部关键数值及单位、参考范围、异常标记、影像描述、结论或诊断原文。能读取的尽量完整读取；无法辨认的字段写“未识别”。
+仅做客观信息整理，不提供诊断判断、治疗建议、用药建议或风险推断。
+必须严格按以下格式输出，字段名单独占一行：
+报告类型：检查/检验报告、病理报告或无法确定
+医院：医院全称或未识别
+检查时间：优先检查日期，其次采样/送检/报告日期；保留原报告时间格式或写未识别
+检查项目：检查项目全称或未识别
+内容摘要：
+- 按原报告结构逐条列出其他所有可辨认内容，包括科室、患者信息、标本、所见、数值、单位、参考范围、异常标记、结论/诊断原文等。
+不要输出“温馨提示”、免责声明或就医建议。`
 
 // AIChatRequest AI 聊天请求结构
 type AIChatRequest struct {
@@ -150,7 +155,14 @@ func ReloadAISettings(db *sql.DB) {
 	aiPrompt = values["AI_PROMPT"]
 	aiReportVisionModel = firstNonEmptyString(values["AI_REPORT_VISION_MODEL"], "ernie-4.5-turbo-vl-32k")
 	aiReportTextModel = firstNonEmptyString(values["AI_REPORT_TEXT_MODEL"], "ernie-lite-pro-128k")
-	aiReportPrompt = firstNonEmptyString(values["AI_REPORT_PROMPT"], defaultReportAnalysisPrompt)
+	storedReportPrompt := strings.TrimSpace(values["AI_REPORT_PROMPT"])
+	if storedReportPrompt == "" || (strings.Contains(storedReportPrompt, "结尾固定提示") && strings.Contains(storedReportPrompt, "温馨提示")) {
+		storedReportPrompt = defaultReportAnalysisPrompt
+		if _, updateErr := db.Exec(`UPDATE setting_system SET key_value = ?, updated_at = NOW() WHERE key_name = 'AI_REPORT_PROMPT'`, storedReportPrompt); updateErr != nil {
+			log.Printf("update default report analysis prompt: %v", updateErr)
+		}
+	}
+	aiReportPrompt = storedReportPrompt
 }
 
 // GetAIRequestUser 获取调用AI对话的用户身份和AI访问限制状态

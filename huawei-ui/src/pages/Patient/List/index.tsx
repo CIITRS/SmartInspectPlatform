@@ -6,7 +6,7 @@ import { useNavigate, useModel } from '@umijs/max';
 import { PlusOutlined, UploadOutlined, DeleteOutlined, EditOutlined, DownloadOutlined, ReloadOutlined, SearchOutlined, FileExcelOutlined, DeleteFilled, UndoOutlined, EditTwoTone, InboxOutlined } from '@ant-design/icons';
 import { listPatients, deletePatient, getPatientById, getSamplesByPatientId, listSalesAssignmentPatients, assignSalesToPatient } from '@/services/api';
 import dayjs from 'dayjs';
-import PatientReportPreview from '@/components/PatientReportPreview';
+import PatientReportList from '@/components/PatientReportPreview/ReportList';
 
 const getSalesPersonCode = (user: any) =>
   String(user?.employee_id || '').trim();
@@ -784,24 +784,7 @@ const List: React.FC = () => {
                 >
                   {filesExpanded && (
                     <div>
-                      {currentPatient.reportFiles ? (
-                        <div>
-                          <strong>上传的文件：</strong>
-                          <ul>
-                            {currentPatient.reportFiles.split(',').map((file: string) => (
-                              <li key={file}>
-                                <PatientReportPreview
-                                  patientCode={currentPatient.patientCode}
-                                  fileUrl={file.trim()}
-                                  label={file.split('/').pop()}
-                                />
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      ) : (
-                        <div>暂无上传的文件</div>
-                      )}
+                      <PatientReportList patientCode={currentPatient.patientCode} reportFiles={currentPatient.reportFiles} />
                     </div>
                   )}
                 </Card>

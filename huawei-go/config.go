@@ -412,10 +412,16 @@ func EnsureSchema(db *sql.DB, dbName string) error {
 			file_url TEXT NOT NULL,
 			file_name VARCHAR(255) DEFAULT '',
 			file_type VARCHAR(20) DEFAULT '',
+			report_type VARCHAR(50) DEFAULT '',
+			hospital VARCHAR(255) DEFAULT '',
+			examination_time VARCHAR(100) DEFAULT '',
+			examination_item VARCHAR(255) DEFAULT '',
 			status VARCHAR(20) NOT NULL DEFAULT 'pending',
 			analysis_text LONGTEXT,
 			model VARCHAR(100) DEFAULT '',
 			error_message VARCHAR(500) DEFAULT '',
+			edited_by INT DEFAULT 0,
+			edited_at DATETIME DEFAULT NULL,
 			analyzed_at DATETIME DEFAULT NULL,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -687,6 +693,19 @@ func EnsureSchema(db *sql.DB, dbName string) error {
 	}
 	if err := ensureColumn(db, dbName, "detect_patient", "ai_allowed", "TINYINT(1) DEFAULT 1"); err != nil {
 		return err
+	}
+	reportAnalysisColumns := map[string]string{
+		"report_type":      "VARCHAR(50) DEFAULT ''",
+		"hospital":         "VARCHAR(255) DEFAULT ''",
+		"examination_time": "VARCHAR(100) DEFAULT ''",
+		"examination_item": "VARCHAR(255) DEFAULT ''",
+		"edited_by":        "INT DEFAULT 0",
+		"edited_at":        "DATETIME DEFAULT NULL",
+	}
+	for column, definition := range reportAnalysisColumns {
+		if err := ensureColumn(db, dbName, "patient_report_analysis", column, definition); err != nil {
+			return err
+		}
 	}
 	patientColumns := map[string]string{
 		"patient_code":                 "VARCHAR(100) UNIQUE",

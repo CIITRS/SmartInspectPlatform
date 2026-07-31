@@ -4,7 +4,7 @@ import { useNavigate, useModel } from '@umijs/max';
 import { EditOutlined, EyeOutlined } from '@ant-design/icons';
 import { listPatients, getPatientById, getSamplesByPatientId } from '@/services/api';
 import dayjs from 'dayjs';
-import PatientReportPreview from '@/components/PatientReportPreview';
+import PatientReportList from '@/components/PatientReportPreview/ReportList';
 
 const { TabPane } = Tabs;
 
@@ -384,26 +384,7 @@ const Perfect: React.FC = () => {
 
             {/* 报告文件 */}
             <Card title="报告文件" style={{ marginTop: 16 }}>
-              {currentPatient.reportFiles ? (
-                <div>
-                  {currentPatient.reportFiles.split(',').map((filePath: string, index: number) => {
-                    const fileName = filePath.split('/').pop() || filePath;
-                    return (
-                      <div key={index} style={{ marginBottom: 8, display: 'flex', alignItems: 'center' }}>
-                        <PatientReportPreview
-                          patientCode={currentPatient.patientCode}
-                          fileUrl={filePath.trim()}
-                          label={fileName}
-                        />
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : (
-                <div style={{ textAlign: 'center', padding: '20px', color: '#999' }}>
-                  暂无报告文件
-                </div>
-              )}
+              <PatientReportList patientCode={currentPatient.patientCode} reportFiles={currentPatient.reportFiles} />
             </Card>
           </div>
         )}

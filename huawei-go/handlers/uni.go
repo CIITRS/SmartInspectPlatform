@@ -416,6 +416,11 @@ func HandleUniEmployeePatientDetail(c *app.RequestContext, db *sql.DB) {
 	if birthday.Valid {
 		patient["birthday"] = birthday.Time.Format("2006-01-02")
 	}
+	if reportFileList, listErr := buildPatientReportFileList(db, patientID); listErr == nil {
+		patient["report_file_list"] = reportFileList
+	} else {
+		patient["report_file_list"] = []PatientReportFile{}
+	}
 
 	rows, err := db.Query(`SELECT s.id, s.sample_code, s.collection_date, s.sample_status,
 		s.receive_date, s.notes, COALESCE(s.sample_type_id, 0), COALESCE(st.name, ''),

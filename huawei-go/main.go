@@ -472,6 +472,9 @@ func main() {
 			patients.DELETE("/:id/report-files", func(c context.Context, ctx *app.RequestContext) {
 				handlers.HandleDeletePatientReportFile(ctx, db)
 			})
+			patients.GET("/:id/report-files", func(c context.Context, ctx *app.RequestContext) {
+				handlers.HandleListPatientReportFiles(ctx, db)
+			})
 			patients.GET("/:id/report-files/preview", func(c context.Context, ctx *app.RequestContext) {
 				handlers.HandleGetPatientReportPreviewURL(ctx, db)
 			})
@@ -480,6 +483,9 @@ func main() {
 			})
 			patients.POST("/:id/report-files/analysis", func(c context.Context, ctx *app.RequestContext) {
 				handlers.HandleAnalyzePatientReport(ctx, db)
+			})
+			patients.PUT("/:id/report-files/analysis", func(c context.Context, ctx *app.RequestContext) {
+				handlers.HandleUpdatePatientReportAnalysis(ctx, db)
 			})
 			patients.DELETE("/:id", func(c context.Context, ctx *app.RequestContext) {
 				handlers.HandleDeletePatient(ctx, db)

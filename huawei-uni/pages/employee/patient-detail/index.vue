@@ -33,8 +33,13 @@
         <view class="info-row"><text class="lbl">其他信息</text><text class="val">{{ patient.other_info || '-' }}</text></view>
         <view v-if="reportFiles.length" class="report-file-list">
           <text class="report-file-title">患者报告</text>
-          <view v-for="(file, index) in reportFiles" :key="file" class="report-file-item" @click="openPatientReport(file)">
-            <text class="report-file-name">{{ reportFileName(file, index) }}</text>
+          <view v-for="(file, index) in reportFiles" :key="reportFileUrl(file)" class="report-file-item" @click="openPatientReport(file)">
+            <view class="report-file-main">
+              <text class="report-file-name">{{ reportFileName(file, index) }}</text>
+              <text class="report-file-meta">上传：{{ file.upload_time || '-' }}</text>
+              <text class="report-file-meta">检查：{{ file.examination_time || '-' }}</text>
+              <text class="report-file-meta">类型：{{ file.report_type || '-' }}　项目：{{ file.examination_item || '-' }}</text>
+            </view>
             <text class="report-file-action">原图与AI分析 ›</text>
           </view>
         </view>
@@ -106,6 +111,7 @@
               :src="reportModal.previewUrl"
               class="report-preview-image"
               mode="widthFix"
+              @click="previewReportImage"
               @error="handleReportImageError"
             />
             <view v-else-if="reportModal.kind === 'pdf'" class="report-pdf-tip">
@@ -122,7 +128,16 @@
               </button>
             </view>
             <view v-if="reportModal.analysisLoading" class="report-state">正在识别报告类型并整理内容，请稍候...</view>
-            <text v-else-if="reportModal.analysis && reportModal.analysis.status === 'completed'" class="report-analysis-text">{{ reportModal.analysis.content }}</text>
+            <view v-else-if="reportModal.analysis && reportModal.analysis.status === 'completed'">
+              <view class="report-fields">
+                <view class="info-row"><text class="lbl">报告类型</text><text class="val">{{ reportModal.analysis.report_type || '未识别' }}</text></view>
+                <view class="info-row"><text class="lbl">医院</text><text class="val">{{ reportModal.analysis.hospital || '未识别' }}</text></view>
+                <view class="info-row"><text class="lbl">检查时间</text><text class="val">{{ reportModal.analysis.examination_time || '未识别' }}</text></view>
+                <view class="info-row"><text class="lbl">检查项目</text><text class="val">{{ reportModal.analysis.examination_item || '未识别' }}</text></view>
+              </view>
+              <text class="report-summary-title">内容摘要</text>
+              <text class="report-analysis-text">{{ reportModal.analysis.content || '暂无摘要' }}</text>
+            </view>
             <view v-else-if="reportModal.analysis && reportModal.analysis.status === 'failed'" class="report-error">
               <text>{{ reportModal.analysis.error_message || '分析失败，请稍后重试' }}</text>
               <button class="report-open-btn" @click="retryReportAnalysis">重试</button>
@@ -132,7 +147,6 @@
               <text v-if="reportModal.analysis.model">模型：{{ reportModal.analysis.model }}</text>
               <text v-if="reportModal.analysis.analyzed_at">分析时间：{{ reportModal.analysis.analyzed_at }}</text>
             </view>
-            <text class="report-disclaimer">AI 内容仅帮助阅读原报告，不能替代医生诊断，请以原报告和医生判断为准。</text>
           </view>
         </scroll-view>
       </view>
@@ -193,7 +207,9 @@ export default {
           this.patient = res.data.patient || {}
           this.samples = Array.isArray(res.data.samples) ? res.data.samples : []
           this.followUps = Array.isArray(res.data.follow_ups) ? res.data.follow_ups : []
-          this.reportFiles = this.collectReportFiles(this.patient.report_files, this.followUps)
+          this.reportFiles = Array.isArray(this.patient.report_file_list)
+            ? this.patient.report_file_list
+            : this.collectReportFiles(this.patient.report_files, this.followUps)
         } else {
           uni.showToast({ title: res.message || '加载失败', icon: 'none' })
         }
@@ -225,7 +241,8 @@ export default {
       return files
     },
     reportFileName(fileUrl, index) {
-      const encoded = String(fileUrl || '').split('?')[0].split('/').pop()
+      if (fileUrl && typeof fileUrl === 'object' && fileUrl.file_name) return fileUrl.file_name
+      const encoded = String(this.reportFileUrl(fileUrl) || '').split('?')[0].split('/').pop()
       if (!encoded) return `患者报告${index + 1}`
       try {
         return decodeURIComponent(encoded)
@@ -233,13 +250,17 @@ export default {
         return encoded
       }
     },
+    reportFileUrl(file) {
+      return file && typeof file === 'object' ? (file.file_url || '') : String(file || '')
+    },
     reportKind(fileUrl) {
       const clean = String(fileUrl || '').split('?')[0].toLowerCase()
       if (/\.(jpg|jpeg|png|webp)$/.test(clean)) return 'image'
       if (clean.endsWith('.pdf')) return 'pdf'
       return 'other'
     },
-    async openPatientReport(fileUrl) {
+    async openPatientReport(file) {
+      const fileUrl = this.reportFileUrl(file)
       this.reportModal = {
         open: true,
         fileUrl,
@@ -293,6 +314,10 @@ export default {
     handleReportImageError() {
       uni.showToast({ title: '原图加载失败，请稍后重试', icon: 'none' })
     },
+    previewReportImage() {
+      if (!this.reportModal.previewUrl) return
+      uni.previewImage({ current: this.reportModal.previewUrl, urls: [this.reportModal.previewUrl] })
+    },
     openReportDocument() {
       if (!this.reportModal.previewUrl) return
       uni.downloadFile({
@@ -331,7 +356,9 @@ export default {
 .report-file-title { display: block; margin-bottom: 10rpx; color: #1f2d3d; font-size: 26rpx; font-weight: 600; }
 .follow-report-list { margin-top: 14rpx; }
 .report-file-item { display: flex; align-items: center; justify-content: space-between; gap: 16rpx; min-height: 76rpx; padding: 8rpx 0; border-bottom: 1rpx solid #f5f5f5; }
-.report-file-name { flex: 1; min-width: 0; color: #34495e; font-size: 25rpx; word-break: break-all; }
+.report-file-main { flex: 1; min-width: 0; }
+.report-file-name { display: block; color: #34495e; font-size: 25rpx; word-break: break-all; }
+.report-file-meta { display: block; margin-top: 6rpx; color: #8c9aa8; font-size: 21rpx; line-height: 1.45; }
 .report-file-action { flex-shrink: 0; color: #1677ff; font-size: 24rpx; }
 .empty-card { display: flex; justify-content: center; padding: 72rpx 0; color: #8c9aa8; font-size: 26rpx; }
 .sample-list { display: flex; flex-direction: column; gap: 20rpx; }
@@ -365,7 +392,8 @@ export default {
 .report-retry-btn { width: 164rpx; height: 64rpx; line-height: 64rpx; margin: 0; border: none; border-radius: 12rpx; background: #f0f5ff; color: #1677ff; font-size: 24rpx; }
 .report-retry-btn[disabled] { color: #8c9aa8; background: #f4f5f6; }
 .report-analysis-text { display: block; padding: 22rpx 0; color: #263445; font-size: 27rpx; line-height: 1.75; white-space: pre-wrap; word-break: break-word; }
+.report-fields { padding: 10rpx 0 18rpx; border-bottom: 1rpx solid #f0f2f5; }
+.report-summary-title { display: block; padding-top: 22rpx; color: #1f2d3d; font-size: 26rpx; font-weight: 700; }
 .report-analysis-meta { display: flex; flex-direction: column; gap: 8rpx; padding: 16rpx 0; border-top: 1rpx solid #f0f2f5; color: #8c9aa8; font-size: 22rpx; }
 .report-error { padding: 32rpx 8rpx; color: #c0392b; font-size: 25rpx; line-height: 1.6; text-align: center; }
-.report-disclaimer { display: block; margin-top: 20rpx; padding: 18rpx; border-radius: 12rpx; background: #e6f4ff; color: #315b7d; font-size: 23rpx; line-height: 1.6; }
 </style>

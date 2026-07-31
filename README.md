@@ -4,7 +4,7 @@
 [![Release](https://img.shields.io/github/v/release/CIITRS/SmartInspectPlatform)](https://github.com/CIITRS/SmartInspectPlatform/releases)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
-患者、样本、检测结果和报告的一体化管理平台。当前版本为 **v0.2.4**，包含管理后台、Go API 服务和微信小程序。
+患者、样本、检测结果和报告的一体化管理平台。当前版本为 **v0.2.5**，包含管理后台、Go API 服务和微信小程序。
 
 > 本系统用于医疗检测业务流程管理，不能替代医生诊断或治疗建议。部署和使用时应遵守所在地的医疗、隐私与数据安全法规。
 
@@ -167,7 +167,7 @@ POST /api/system/version/upgrade
 
 ```bash
 cd /path/to/application
-bash scripts/upgrade.sh v0.2.4 --check
+bash scripts/upgrade.sh v0.2.5 --check
 ```
 
 自动升级会改动运行文件并重启服务。生产使用前应配置数据库与文件备份、维护窗口、服务账户权限和回滚预案。

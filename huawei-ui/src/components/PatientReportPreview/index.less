@@ -1,139 +1,29 @@
-.patient-report-modal {
-  .ant-modal-body {
-    padding-top: 12px;
-  }
-}
-
-.patient-report-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(360px, 0.85fr);
-  gap: 16px;
-  min-height: 520px;
-  max-height: 78vh;
-}
-
-.patient-report-original,
-.patient-report-analysis {
-  min-width: 0;
-  border: 1px solid #e5e7eb;
-  border-radius: 10px;
-  background: #fff;
-  overflow: auto;
-}
-
-.patient-report-original {
-  display: flex;
-  flex-direction: column;
-  background: #f7f8fa;
-}
-
-.patient-report-panel-title {
-  color: #1f2937;
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.patient-report-original > .patient-report-panel-title {
-  padding: 14px 16px;
-  border-bottom: 1px solid #e5e7eb;
-  background: #fff;
-}
-
-.patient-report-media {
-  flex: 1;
-  padding: 16px;
-  text-align: center;
-  overflow: auto;
-}
-
-.patient-report-media img {
-  display: block;
-  max-width: 100%;
-  height: auto;
-  margin: 0 auto;
-  background: #fff;
-}
-
-.patient-report-pdf {
-  width: 100%;
-  min-height: 620px;
-  flex: 1;
-  border: 0;
-}
-
-.patient-report-skeleton-image {
-  width: calc(100% - 32px) !important;
-  height: 420px !important;
-  margin: 16px;
-}
-
-.patient-report-analysis {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  padding: 16px;
-}
-
-.patient-report-analysis-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding-bottom: 12px;
-  margin-bottom: 14px;
-  border-bottom: 1px solid #eef0f3;
-}
-
-.patient-report-analysis-loading {
-  flex: 1;
-}
-
-.patient-report-analysis-text {
-  flex: 1;
-  margin-bottom: 16px !important;
-  color: #263445;
-  white-space: pre-wrap;
-  word-break: break-word;
-  line-height: 1.75;
-}
-
-.patient-report-analysis-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 16px;
-  padding: 10px 0;
-  color: #6b7280;
-  font-size: 12px;
-  border-top: 1px solid #eef0f3;
-}
-
-.patient-report-disclaimer {
-  margin-top: 14px;
-}
-
+.patient-report-trigger { padding: 0; height: auto; white-space: normal; text-align: left; }
+.patient-report-modal .ant-modal-body { height: min(82vh, 900px); padding-top: 12px; overflow: hidden; }
+.patient-report-layout { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(380px, .85fr); gap: 16px; height: 100%; min-height: 520px; }
+.patient-report-original, .patient-report-analysis { min-width: 0; min-height: 0; border: 1px solid #e5e7eb; border-radius: 10px; background: #fff; overflow: hidden; }
+.patient-report-original { display: flex; flex-direction: column; background: #f7f8fa; }
+.patient-report-original-head, .patient-report-analysis-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex: 0 0 auto; padding: 12px 16px; border-bottom: 1px solid #e5e7eb; background: #fff; }
+.patient-report-panel-title { color: #1f2937; font-size: 15px; font-weight: 600; }
+.patient-report-media { flex: 1; min-height: 0; padding: 16px; text-align: center; overflow: auto; }
+.patient-report-media img { display: block; height: auto; margin: 0 auto; background: #fff; transition: width 180ms ease; }
+.patient-report-pdf { display: block; width: 100%; height: 100%; min-height: 0; flex: 1; border: 0; background: #fff; }
+.patient-report-skeleton-image { width: calc(100% - 32px) !important; height: 420px !important; margin: 16px; }
+.patient-report-analysis { display: flex; flex-direction: column; }
+.patient-report-analysis-head { padding: 10px 14px; }
+.patient-report-analysis-loading, .patient-report-analysis-result, .patient-report-edit-form { flex: 1; min-height: 0; padding: 16px; overflow: auto; }
+.patient-report-fields { margin-bottom: 18px; }
+.patient-report-fields .ant-descriptions-item-label { width: 96px; color: #4b5563; font-weight: 500; }
+.patient-report-analysis-text { margin-bottom: 16px !important; color: #263445; white-space: pre-wrap; word-break: break-word; line-height: 1.75; }
+.patient-report-analysis-meta { display: flex; flex-wrap: wrap; gap: 8px 16px; padding-top: 10px; color: #6b7280; font-size: 12px; border-top: 1px solid #eef0f3; }
+.patient-report-field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+@media (prefers-reduced-motion: reduce) { .patient-report-media img { transition: none; } }
 @media (max-width: 767px) {
-  .patient-report-layout {
-    display: flex;
-    flex-direction: column;
-    max-height: 78vh;
-    min-height: 0;
-    overflow-y: auto;
-  }
-
-  .patient-report-original,
-  .patient-report-analysis {
-    overflow: visible;
-  }
-
-  .patient-report-media {
-    max-height: 44vh;
-  }
-
-  .patient-report-pdf {
-    min-height: 44vh;
-  }
-
-  .patient-report-analysis-head {
-    align-items: flex-start;
-  }
+  .patient-report-modal .ant-modal-body { height: 82vh; overflow-y: auto; }
+  .patient-report-layout { display: flex; flex-direction: column; height: auto; min-height: 0; }
+  .patient-report-original { height: 52vh; flex: 0 0 auto; }
+  .patient-report-analysis { min-height: 48vh; overflow: visible; }
+  .patient-report-analysis-loading, .patient-report-analysis-result, .patient-report-edit-form { overflow: visible; }
+  .patient-report-original-head, .patient-report-analysis-head { align-items: flex-start; flex-wrap: wrap; }
+  .patient-report-field-grid { grid-template-columns: 1fr; }
 }
