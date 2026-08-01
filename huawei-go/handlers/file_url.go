@@ -31,6 +31,11 @@ type FileURL struct {
 	OneTimeUse  bool // 标记是否为一次性使用令牌
 }
 
+const (
+	generatedReportRetentionAfterDownload = 2 * time.Minute
+	generatedReportOrphanMaxAge           = 30 * time.Minute
+)
+
 // 全局文件URL管理器
 var fileURLManager *FileURLManager
 
@@ -38,8 +43,9 @@ var fileURLManager *FileURLManager
 func InitFileURLManager() {
 	fileURLManager = &FileURLManager{
 		urls:            make(map[string]*FileURL),
-		cleanupInterval: 5 * time.Minute,
+		cleanupInterval: time.Minute,
 	}
+	cleanupManagedTemporaryFiles(generatedReportOrphanMaxAge)
 	// 启动清理过期URL的goroutine
 	go fileURLManager.cleanupExpiredURLs()
 }
@@ -51,14 +57,88 @@ func (m *FileURLManager) cleanupExpiredURLs() {
 
 	for {
 		<-ticker.C
+		var expiredPaths []string
 		m.mutex.Lock()
 		now := time.Now()
 		for id, url := range m.urls {
 			if now.After(url.ExpiresAt) {
+				expiredPaths = append(expiredPaths, url.FilePath)
 				delete(m.urls, id)
 			}
 		}
 		m.mutex.Unlock()
+		for _, filePath := range expiredPaths {
+			removeManagedTemporaryFile(filePath)
+		}
+		cleanupManagedTemporaryFiles(generatedReportOrphanMaxAge)
+	}
+}
+
+func isManagedTemporaryFile(filePath string) bool {
+	filePath = strings.TrimSpace(filePath)
+	if filePath == "" {
+		return false
+	}
+	cleanPath, err := filepath.Abs(filepath.Clean(filePath))
+	if err != nil {
+		return false
+	}
+	for _, directory := range []string{
+		filepath.Join("file", "temp", "detect_report"),
+		filepath.Join("file", "temp", "detect_report_preview"),
+	} {
+		cleanDirectory, err := filepath.Abs(directory)
+		if err != nil {
+			continue
+		}
+		if strings.HasPrefix(cleanPath, cleanDirectory+string(os.PathSeparator)) {
+			return true
+		}
+	}
+	return false
+}
+
+func removeManagedTemporaryFile(filePath string) {
+	if !isManagedTemporaryFile(filePath) {
+		return
+	}
+	if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
+		log.Printf("删除临时报告文件失败 %s: %v", filePath, err)
+	}
+}
+
+func scheduleManagedTemporaryFileRemovalAfter(filePath string, retention time.Duration) {
+	if !isManagedTemporaryFile(filePath) {
+		return
+	}
+	time.AfterFunc(retention, func() {
+		removeManagedTemporaryFile(filePath)
+	})
+}
+
+func scheduleManagedTemporaryFileRemoval(filePath string) {
+	scheduleManagedTemporaryFileRemovalAfter(filePath, generatedReportRetentionAfterDownload)
+}
+
+func cleanupManagedTemporaryFiles(maxAge time.Duration) {
+	cutoff := time.Now().Add(-maxAge)
+	for _, directory := range []string{
+		filepath.Join("file", "temp", "detect_report"),
+		filepath.Join("file", "temp", "detect_report_preview"),
+	} {
+		entries, err := os.ReadDir(directory)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			info, err := entry.Info()
+			if err == nil && info.ModTime().Before(cutoff) {
+				removeManagedTemporaryFile(filepath.Join(directory, entry.Name()))
+			}
+		}
 	}
 }
 
@@ -302,13 +382,6 @@ func HandleOneTimeDownload(c *app.RequestContext) {
 		return
 	}
 
-	if ext == ".pdf" && strings.Contains(strings.ReplaceAll(filePath, "\\", "/"), "file/temp/detect_report/") {
-		defer func() {
-			if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
-				log.Printf("删除临时PDF失败: %v", err)
-			}
-		}()
-	}
-
 	c.Data(consts.StatusOK, contentType, fileData)
+	scheduleManagedTemporaryFileRemoval(filePath)
 }
