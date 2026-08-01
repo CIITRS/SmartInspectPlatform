@@ -1,8 +1,24 @@
 .system-upgrade-progress-modal {
   .ant-modal-body {
-    max-height: 72vh;
+    max-height: min(72vh, 720px);
     overflow-y: auto;
   }
+}
+
+.system-upgrade-download {
+  margin-top: 16px;
+  padding: 14px 16px;
+  border: 1px solid #d9e7f7;
+  border-radius: 8px;
+  background: #f5f9ff;
+}
+
+.system-upgrade-download-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 8px;
 }
 
 .system-upgrade-steps {
@@ -22,14 +38,48 @@
   background: #f7f8fa;
 }
 
-.system-upgrade-log pre {
+.system-upgrade-log-list {
   max-height: 180px;
   margin: 10px 0 0;
   overflow: auto;
-  color: #344054;
+}
+
+.system-upgrade-log-item {
+  display: grid;
+  grid-template-columns: 18px 142px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  padding: 8px 0;
+  border-bottom: 1px solid #eaecf0;
+
+  &:last-child {
+    border-bottom: 0;
+  }
+
+  &.is-error .system-upgrade-log-icon {
+    color: #d92d20;
+  }
+
+  &.is-success .system-upgrade-log-icon {
+    color: #039855;
+  }
+
+  &.is-running .system-upgrade-log-icon {
+    color: #1677ff;
+  }
+}
+
+.system-upgrade-log-time {
+  color: #667085;
   font-size: 12px;
-  line-height: 1.6;
-  white-space: pre-wrap;
+  line-height: 22px;
+}
+
+.system-upgrade-log-content {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
   word-break: break-word;
 }
 
@@ -38,8 +88,27 @@
     margin: 20px 0;
   }
 
-  .system-upgrade-log pre {
+  .system-upgrade-log-list {
     max-height: 140px;
+  }
+
+  .system-upgrade-download-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .system-upgrade-log-item {
+    grid-template-columns: 18px minmax(0, 1fr);
+  }
+
+  .system-upgrade-log-time {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .system-upgrade-log-content {
+    grid-column: 2;
   }
 }
 

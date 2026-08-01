@@ -1,4 +1,4 @@
-import { CheckCircleOutlined, CloudDownloadOutlined, CodeOutlined, CopyrightOutlined, InfoCircleOutlined, ReloadOutlined } from '@ant-design/icons';
+import { CheckCircleOutlined, ClockCircleOutlined, CloudDownloadOutlined, CodeOutlined, CopyrightOutlined, CloseCircleOutlined, InfoCircleOutlined, LoadingOutlined, ReloadOutlined } from '@ant-design/icons';
 import { Alert, App, Button, Card, Divider, List, Modal, Progress, Space, Spin, Steps, Tag, Typography } from 'antd';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import './index.less';
@@ -27,6 +27,18 @@ interface UpgradeStatus {
   message: string;
   started_at?: string;
   updated_at?: string;
+  download_name?: string;
+  download_bytes?: number;
+  download_total_bytes?: number;
+  download_speed_bps?: number;
+  download_percent?: number;
+}
+
+interface UpgradeLogEntry {
+  time: string;
+  title: string;
+  detail?: string;
+  level: 'info' | 'running' | 'success' | 'error';
 }
 
 const upgradeSteps = [
@@ -47,6 +59,49 @@ const localVersionInfo: VersionInfo = {
   current_version: __APP_VERSION__,
   release_date: __APP_RELEASE_DATE__,
   build_commit: __APP_BUILD_COMMIT__,
+};
+
+const formatBytes = (value = 0) => {
+  if (!Number.isFinite(value) || value <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const unitIndex = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
+  const amount = value / (1024 ** unitIndex);
+  return `${amount >= 10 || unitIndex === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[unitIndex]}`;
+};
+
+const parseUpgradeLog = (line: string): UpgradeLogEntry => {
+  const match = line.match(/^\[([^\]]+)]\s*(.*)$/);
+  const time = match?.[1] || '';
+  const content = (match?.[2] || line).trim();
+
+  if (/curl:|failed|failure|mismatch|not found|invalid|error/i.test(content)) {
+    return { time, title: '执行出错', detail: content, level: 'error' };
+  }
+  if (/completed successfully|Check completed/i.test(content)) {
+    return { time, title: '升级已完成', detail: content, level: 'success' };
+  }
+  if (/(: OK$|checksum.*valid|through verification)/i.test(content)) {
+    return { time, title: '发布包校验通过', detail: content, level: 'success' };
+  }
+  if (content.startsWith('Application directory:')) {
+    return { time, title: '确认应用目录', detail: content.replace('Application directory:', '').trim(), level: 'info' };
+  }
+  if (content.startsWith('Binary target:')) {
+    return { time, title: '确认后端程序', detail: content.replace('Binary target:', '').trim(), level: 'info' };
+  }
+  if (content.startsWith('Service manager:')) {
+    return { time, title: '确认服务管理器', detail: content.replace('Service manager:', '').trim(), level: 'info' };
+  }
+  if (content === 'Upgrade mode: verified GitHub Release') {
+    return { time, title: '升级方式', detail: '已验证的 GitHub Release 发布包', level: 'info' };
+  }
+  if (content.startsWith('Reading GitHub Release metadata for')) {
+    return { time, title: '读取 GitHub 发布信息', detail: content.replace('Reading GitHub Release metadata for', '').replace(/\.$/, '').trim(), level: 'running' };
+  }
+  if (content.startsWith('Downloading verified GitHub Release asset')) {
+    return { time, title: '下载已验证的发布包', detail: content.replace('Downloading verified GitHub Release asset', '').replace(/\.$/, '').trim(), level: 'running' };
+  }
+  return { time, title: content || '升级任务更新', level: 'info' };
 };
 
 const About: React.FC = () => {
@@ -148,6 +203,7 @@ const About: React.FC = () => {
     Modal.confirm({
       title: `升级到 ${versionInfo.latest_version}`,
       content: '升级过程会构建新版本、备份当前服务并自动重启。请确认当前没有正在进行的批次导入或报告生成任务。',
+      centered: true,
       okText: '开始升级',
       cancelText: '取消',
       onOk: async () => {
@@ -261,6 +317,7 @@ const About: React.FC = () => {
         onCancel={() => setUpgradeModalOpen(false)}
         width="min(920px, 94vw)"
         className="system-upgrade-progress-modal"
+        centered
         maskClosable={!upgrading}
         footer={[
           upgradeStatus.state === 'failed' && (
@@ -277,6 +334,29 @@ const About: React.FC = () => {
             status={upgradeStatus.state === 'failed' ? 'exception' : upgradeStatus.state === 'completed' ? 'success' : 'active'}
             strokeColor={upgradeStatus.state === 'completed' ? '#52c41a' : undefined}
           />
+          {Boolean(upgradeStatus.download_total_bytes) && upgradeStatus.current_step === 2 && (
+            <div className="system-upgrade-download" aria-label="发布包下载进度">
+              <div className="system-upgrade-download-header">
+                <Space size={8}>
+                  {upgradeStatus.download_percent === 100 ? <CheckCircleOutlined /> : <CloudDownloadOutlined />}
+                  <Text strong>{upgradeStatus.download_name || 'GitHub Release 发布包'}</Text>
+                </Space>
+                <Text type="secondary">
+                  {formatBytes(upgradeStatus.download_bytes)} / {formatBytes(upgradeStatus.download_total_bytes)}
+                </Text>
+              </div>
+              <Progress
+                percent={upgradeStatus.download_percent || 0}
+                status={upgradeStatus.download_percent === 100 ? 'success' : 'active'}
+                size="small"
+              />
+              <Text type="secondary">
+                {upgradeStatus.download_percent === 100
+                  ? '下载完成，正在校验文件完整性'
+                  : `下载速度 ${formatBytes(upgradeStatus.download_speed_bps)}/s`}
+              </Text>
+            </div>
+          )}
           <Steps
             className="system-upgrade-steps"
             current={Math.max(0, (upgradeStatus.current_step || 1) - 1)}
@@ -300,7 +380,28 @@ const About: React.FC = () => {
           {upgradeLog.length > 0 && (
             <div className="system-upgrade-log" aria-label="最近升级日志">
               <Text strong>最近日志</Text>
-              <pre>{upgradeLog.slice(-10).join('\n')}</pre>
+              <div className="system-upgrade-log-list">
+                {upgradeLog.slice(-10).map((line, index) => {
+                  const entry = parseUpgradeLog(line);
+                  const icon = entry.level === 'error'
+                    ? <CloseCircleOutlined />
+                    : entry.level === 'success'
+                      ? <CheckCircleOutlined />
+                      : entry.level === 'running'
+                        ? <LoadingOutlined />
+                        : <ClockCircleOutlined />;
+                  return (
+                    <div className={`system-upgrade-log-item is-${entry.level}`} key={`${line}-${index}`}>
+                      <span className="system-upgrade-log-icon">{icon}</span>
+                      <span className="system-upgrade-log-time">{entry.time || '--'}</span>
+                      <span className="system-upgrade-log-content">
+                        <Text strong>{entry.title}</Text>
+                        {entry.detail && <Text type="secondary">{entry.detail}</Text>}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
         </div>
