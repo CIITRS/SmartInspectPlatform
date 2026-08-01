@@ -244,8 +244,10 @@ func signExpressV1Request(request *http.Request, appKey, appSecret string, now t
 		"content-type:" + bceURIEncode(contentType),
 		"host:" + bceURIEncode(host),
 	}, "\n")
-	signingKey := bceHMACSHA256([]byte(appSecret), authPrefix)
-	signature := fmt.Sprintf("%x", bceHMACSHA256(signingKey, canonicalRequest))
+	// BCE defines SigningKey as HMAC-SHA256-HEX, so the second HMAC uses
+	// the hexadecimal SigningKey text rather than the raw digest bytes.
+	signingKey := fmt.Sprintf("%x", bceHMACSHA256([]byte(appSecret), authPrefix))
+	signature := fmt.Sprintf("%x", bceHMACSHA256([]byte(signingKey), canonicalRequest))
 	request.Header.Set("X-Bce-Signature", authPrefix+"/"+signedHeaders+"/"+signature)
 	return nil
 }
