@@ -111,7 +111,7 @@ const List: React.FC = () => {
         <Button 
           type="link" 
           size="small"
-          onClick={() => navigate(`/result/detail/${record.id}`)}
+          onClick={() => navigate(`/result/detail/${encodeURIComponent(record.sampleCode || record.sample_code)}`)}
         >
           查看详情
         </Button>

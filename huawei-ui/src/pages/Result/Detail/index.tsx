@@ -6,6 +6,9 @@ import { getSamples, listModels, listCancerTypes, listGenes, updateSampleGeneDat
 import EChartsHeatmap from '@/components/EChartsHeatmap';
 import dayjs from 'dayjs';
 
+const formatDateTime = (value?: string) => value && dayjs(value).isValid() ? dayjs(value).format('YYYY/MM/DD HH:mm') : '-';
+const buildBarcodeImageUrl = (code?: string) => code ? `/api/samples/barcode?sample_code=${encodeURIComponent(code)}` : '';
+
 const Detail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const [sample, setSample] = useState<any>(null);
@@ -84,7 +87,7 @@ const Detail: React.FC = () => {
         await updateSampleExpress(String(current.id), expressInfo);
         message.success('快递运单已更新');
       } else {
-        await saveSampleExpress(id!, expressInfo);
+        await saveSampleExpress(String(sample.id), expressInfo);
         message.success('快递运单已保存');
       }
       
@@ -254,9 +257,18 @@ const Detail: React.FC = () => {
 
       <Card>
         <Descriptions column={2} bordered>
-          <Descriptions.Item label="样本编号">{sample.sample_code}</Descriptions.Item>
+          <Descriptions.Item label="样本编号">
+            <Space direction="vertical" size={4}>
+              <span>{sample.sample_code}</span>
+              <img
+                src={buildBarcodeImageUrl(sample.sample_code)}
+                alt={`${sample.sample_code} 条形码`}
+                style={{ width: 240, maxWidth: '100%', height: 68, objectFit: 'contain', border: '1px solid #f0f0f0', borderRadius: 4, background: '#fff', padding: 4 }}
+              />
+            </Space>
+          </Descriptions.Item>
           <Descriptions.Item label="患者姓名">{sample.patient_name || '-'}</Descriptions.Item>
-          <Descriptions.Item label="患者身份证号">{sample.patient_id_card || '-'}</Descriptions.Item>
+          <Descriptions.Item label="患者身份证号">{sample.id_card || sample.patient_id_card || '-'}</Descriptions.Item>
           <Descriptions.Item label="样本类型">{sample.sample_type_name || '-'}</Descriptions.Item>
           <Descriptions.Item label="采集日期">
             {sample.collection_date ? (
@@ -293,126 +305,81 @@ const Detail: React.FC = () => {
         </Descriptions>
       </Card>
 
-      {/* 样本状态时间线 - 横向 Steps */}
+      {/* 样本状态时间线 */}
       <Card title="样本状态" style={{ marginTop: 16 }}>
-        <div style={{ maxWidth: 1200, overflowX: 'auto' }}>
+        <div style={{ overflowX: 'auto', paddingBottom: 4 }}>
           <Steps
-            current={(() => {
-              const statusIndex: Record<string, number> = {
-                'created': 0,
-                'collected': 1,
-                'sent': 2,
-                'received': 3,
-                'processing': 3,
-                'tested': 4,
-                'completed': 4
-              };
-              return statusIndex[sample.status] || 0;
-            })()}
+            responsive
+            current={['created', 'collected'].includes(sample.status) ? (expressData.inbound ? 2 : sample.status === 'collected' ? 1 : 0) : sample.has_report ? (sample.report_reviewed_time ? (sample.patient_viewed ? 7 : 6) : 5) : ['tested', 'completed'].includes(sample.status) ? 4 : 3}
             status={sample.status === 'processing' ? 'process' : undefined}
             items={[
               {
                 title: '样本创建',
-                description: sample.collection_date ? (
+                description: sample.created_at ? (
                   <div style={{ fontSize: 12 }}>
-                    <div>{(() => {
-                      const d = new Date(sample.collection_date);
-                      const year = d.getFullYear();
-                      const month = String(d.getMonth() + 1).padStart(2, '0');
-                      const day = String(d.getDate()).padStart(2, '0');
-                      const hours = String(d.getHours()).padStart(2, '0');
-                      const minutes = String(d.getMinutes()).padStart(2, '0');
-                      return `${year}/${month}/${day} ${hours}:${minutes}`;
-                    })()}</div>
+                    <div>{formatDateTime(sample.created_at)}</div>
                     <div>{sample.collection_user_name || sample.collection_operator || '-'}</div>
                   </div>
                 ) : '未设置',
-                icon: (['collected', 'sent', 'received', 'processing', 'tested', 'completed'].includes(sample.status)) ? (
-                  <CheckCircleOutlined style={{ color: '#52c41a', fontSize: 20 }} />
-                ) : (
-                  <ClockCircleOutlined style={{ color: '#d9d9d9', fontSize: 20 }} />
-                )
               },
               {
                 title: '样本采集',
                 description: ['collected', 'sent', 'received', 'processing', 'tested', 'completed'].includes(sample.status) ? (
                   <div style={{ fontSize: 12 }}>
                     <div>已采集</div>
-                    <div>{sample.collection_date ? (() => {
-                      const d = new Date(sample.collection_date);
-                      return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`;
-                    })() : ''}</div>
+                    <div>{formatDateTime(sample.collection_date)}</div>
+                    <div>{sample.collection_user_name || sample.collection_operator || '-'}</div>
                   </div>
                 ) : '待采集',
-                icon: ['collected', 'sent', 'received', 'processing', 'tested', 'completed'].includes(sample.status) ? (
-                  <CheckCircleOutlined style={{ color: '#52c41a', fontSize: 20 }} />
-                ) : (
-                  <ClockCircleOutlined style={{ color: '#d9d9d9', fontSize: 20 }} />
-                )
               },
               {
-                title: '送检中',
-                description: ['sent', 'received', 'processing', 'tested', 'completed'].includes(sample.status) ? (
-                  <div style={{ fontSize: 12 }}><div>已送检</div></div>
-                ) : '待送检',
-                icon: ['sent', 'received', 'processing', 'tested', 'completed'].includes(sample.status) ? (
-                  <CheckCircleOutlined style={{ color: '#52c41a', fontSize: 20 }} />
-                ) : (
-                  <ClockCircleOutlined style={{ color: '#d9d9d9', fontSize: 20 }} />
-                )
+                title: '运输中',
+                description: expressData.inbound ? (
+                  <div style={{ fontSize: 12, maxWidth: 180 }}>
+                    <div>{expressData.inbound.status === 'delivered' ? '已送达' : '送检中'}</div>
+                    <div>单号：{expressData.inbound.tracking_number || '-'}</div>
+                    <div>{expressData.inbound.latest_event_status || formatDateTime(expressData.inbound.latest_event_time)}</div>
+                  </div>
+                ) : '暂无运单',
               },
               {
                 title: '样本接收',
                 description: ['received', 'processing', 'tested', 'completed'].includes(sample.status) ? (
                   <div style={{ fontSize: 12 }}>
-                    <div>{sample.receive_date ? (() => {
-                      const d = new Date(sample.receive_date);
-                      const year = d.getFullYear();
-                      const month = String(d.getMonth() + 1).padStart(2, '0');
-                      const day = String(d.getDate()).padStart(2, '0');
-                      const hours = String(d.getHours()).padStart(2, '0');
-                      const minutes = String(d.getMinutes()).padStart(2, '0');
-                      return `${year}/${month}/${day} ${hours}:${minutes}`;
-                    })() : '-'}</div>
+                    <div>{formatDateTime(sample.receive_date)}</div>
                     <div>{sample.receive_user_name || sample.receive_operator || '-'}</div>
                   </div>
                 ) : '待接收',
-                icon: ['received', 'processing', 'tested', 'completed'].includes(sample.status) ? (
-                  sample.status === 'processing' ? (
-                    <CheckCircleOutlined style={{ color: '#1890ff', fontSize: 20 }} />
-                  ) : (
-                    <CheckCircleOutlined style={{ color: '#52c41a', fontSize: 20 }} />
-                  )
-                ) : (
-                  <ClockCircleOutlined style={{ color: '#d9d9d9', fontSize: 20 }} />
-                )
               },
               {
                 title: '样本检测',
                 description: ['tested', 'completed'].includes(sample.status) ? (
                   <div style={{ fontSize: 12 }}>
-                    <div>{sample.test_completed_at ? (() => {
-                      const d = new Date(sample.test_completed_at);
-                      const year = d.getFullYear();
-                      const month = String(d.getMonth() + 1).padStart(2, '0');
-                      const day = String(d.getDate()).padStart(2, '0');
-                      const hours = String(d.getHours()).padStart(2, '0');
-                      const minutes = String(d.getMinutes()).padStart(2, '0');
-                      return `${year}/${month}/${day} ${hours}:${minutes}`;
-                    })() : '-'}</div>
+                    <div>{formatDateTime(sample.test_completed_at)}</div>
                     <div>{sample.test_user_name || sample.test_operator || '-'}</div>
                   </div>
                 ) : '待检测',
-                icon: ['tested', 'completed'].includes(sample.status) ? (
-                  <CheckCircleOutlined style={{ color: '#52c41a', fontSize: 20 }} />
-                ) : sample.status === 'processing' ? (
-                  <ClockCircleOutlined style={{ color: '#1890ff', fontSize: 20 }} />
-                ) : (
-                  <ClockCircleOutlined style={{ color: '#d9d9d9', fontSize: 20 }} />
-                )
-              }
+              },
+              {
+                title: sample.has_report ? '已出报告' : '未出报告',
+                description: sample.has_report ? <div style={{ fontSize: 12 }}><div>{formatDateTime(sample.report_generated_time)}</div><div>{sample.report_generated_by_name || '-'}</div></div> : '待生成',
+              },
+              {
+                title: '报告审核',
+                description: sample.report_reviewed_time ? <div style={{ fontSize: 12 }}><div>已审核</div><div>{formatDateTime(sample.report_reviewed_time)}</div><div>{sample.report_reviewed_by_name || '-'}</div></div> : sample.has_report ? '待审核' : '未生成报告',
+              },
+              {
+                title: '患者查看',
+                description: sample.patient_viewed ? <div style={{ fontSize: 12 }}><div>已查看</div><div>{formatDateTime(sample.patient_viewed_at)}</div></div> : '未查看',
+              },
             ]}
           />
+          {Array.isArray(expressData.inbound?.route) && expressData.inbound.route.length > 0 && expressData.inbound.status !== 'delivered' && (
+            <Timeline
+              style={{ marginTop: 24 }}
+              items={expressData.inbound.route.map((event: any) => ({ children: <><div>{event.status}</div><div style={{ color: '#8c8c8c' }}>{event.time}</div></> }))}
+            />
+          )}
         </div>
       </Card>
 

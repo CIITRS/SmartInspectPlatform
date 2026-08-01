@@ -184,7 +184,7 @@ export default {
     },
     邮寄样本() {
       if (!this.checkLogin()) return
-      uni.navigateTo({ url: '/pages/patient/mail-sample/index' })
+      uni.navigateTo({ url: '/pages/patient/appointment/index?scan=1' })
     },
     我的样本() {
       if (!this.checkLogin()) return

@@ -3,6 +3,7 @@ package handlers
 import (
 	"database/sql"
 	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -45,13 +46,14 @@ func scanMailAddressRows(rows *sql.Rows) ([]utils.H, error) {
 		var orderID, planID sql.NullInt64
 		var receiverName, receiverPhone, province, city, district, detailAddress, fullAddress sql.NullString
 		var expressCompany, trackingNumber, status, notes sql.NullString
-		var patientName, patientCode, patientPhone, orderNo, packageName sql.NullString
-		var detectionNumber sql.NullInt64
+		var patientName, patientCode, patientPhone, orderNo, packageName, cancerType, detectionMode sql.NullString
+		var detectionNumber, detectionCount sql.NullInt64
 		var detectionDate, shippedAt, createdAt, updatedAt sql.NullTime
 		if err := rows.Scan(
 			&id, &patientID, &orderID, &planID, &receiverName, &receiverPhone, &province, &city, &district,
 			&detailAddress, &fullAddress, &expressCompany, &trackingNumber, &status, &notes, &shippedAt, &createdAt, &updatedAt,
 			&patientName, &patientCode, &patientPhone, &orderNo, &packageName, &detectionNumber, &detectionDate,
+			&detectionCount, &cancerType, &detectionMode,
 		); err != nil {
 			return nil, err
 		}
@@ -75,6 +77,8 @@ func scanMailAddressRows(rows *sql.Rows) ([]utils.H, error) {
 			"patient_phone":   patientPhone.String,
 			"order_no":        orderNo.String,
 			"package_name":    packageName.String,
+			"cancer_type":     cancerType.String,
+			"detection_mode":  detectionMode.String,
 		}
 		if orderID.Valid {
 			item["order_id"] = int(orderID.Int64)
@@ -84,6 +88,12 @@ func scanMailAddressRows(rows *sql.Rows) ([]utils.H, error) {
 		}
 		if detectionNumber.Valid {
 			item["detection_number"] = int(detectionNumber.Int64)
+		}
+		if detectionCount.Valid {
+			item["detection_count"] = int(detectionCount.Int64)
+		}
+		if detectionNumber.Valid && detectionCount.Valid {
+			item["package_progress"] = fmt.Sprintf("%d次联检 · 第%d次", detectionCount.Int64, detectionNumber.Int64)
 		}
 		if detectionDate.Valid {
 			item["detection_date"] = detectionDate.Time.Format("2006-01-02")
@@ -100,6 +110,66 @@ func scanMailAddressRows(rows *sql.Rows) ([]utils.H, error) {
 		list = append(list, item)
 	}
 	return list, rows.Err()
+}
+
+func refreshMailAppointmentTracking(db *sql.DB, appointmentID int) {
+	var company, trackingNumber, receiverPhone, status sql.NullString
+	var lastQueryAt sql.NullTime
+	if err := db.QueryRow(`SELECT express_company, tracking_number, receiver_phone, express_status, express_last_query_at
+		FROM mail_address WHERE id = ?`, appointmentID).Scan(&company, &trackingNumber, &receiverPhone, &status, &lastQueryAt); err != nil {
+		return
+	}
+	if strings.TrimSpace(trackingNumber.String) == "" || status.String == "delivered" ||
+		(lastQueryAt.Valid && time.Since(lastQueryAt.Time) < time.Hour) {
+		return
+	}
+	result, err := queryExpressProvider(nil, expressConfig(), "auto", trackingNumber.String, receiverPhone.String)
+	if err != nil {
+		_, _ = db.Exec(`UPDATE mail_address SET express_last_query_at = NOW(), express_last_query_error = ?, updated_at = NOW() WHERE id = ?`,
+			truncateExpressText(err.Error(), 500), appointmentID)
+		return
+	}
+	var routeJSON interface{}
+	if result.Status != "delivered" && len(result.Route) > 0 {
+		encoded, _ := json.Marshal(result.Route)
+		routeJSON = string(encoded)
+	}
+	var deliveredAt interface{}
+	if result.DeliveredAt != nil {
+		deliveredAt = *result.DeliveredAt
+	}
+	_, _ = db.Exec(`UPDATE mail_address SET express_company = COALESCE(NULLIF(?, ''), express_company),
+		express_status = ?, express_route_json = ?, express_delivered_at = ?, express_last_query_at = NOW(),
+		express_last_query_error = '', updated_at = NOW() WHERE id = ?`,
+		result.CompanyName, result.Status, routeJSON, deliveredAt, appointmentID)
+}
+
+func enrichMailAppointmentTracking(db *sql.DB, list []utils.H) {
+	for _, item := range list {
+		id, _ := item["id"].(int)
+		if id <= 0 || strings.TrimSpace(fmt.Sprint(item["tracking_number"])) == "" {
+			continue
+		}
+		refreshMailAppointmentTracking(db, id)
+		var status, routeJSON, lastError sql.NullString
+		var deliveredAt sql.NullTime
+		if err := db.QueryRow(`SELECT express_status, express_route_json, express_delivered_at, express_last_query_error
+			FROM mail_address WHERE id = ?`, id).Scan(&status, &routeJSON, &deliveredAt, &lastError); err != nil {
+			continue
+		}
+		item["express_status"] = firstNonEmptyString(status.String, "pending")
+		item["express_last_query_error"] = lastError.String
+		item["express_route"] = []expressProviderEvent{}
+		if status.String != "delivered" && routeJSON.Valid {
+			var route []expressProviderEvent
+			if json.Unmarshal([]byte(routeJSON.String), &route) == nil {
+				item["express_route"] = route
+			}
+		}
+		if deliveredAt.Valid {
+			item["express_delivered_at"] = deliveredAt.Time.Format("2006-01-02 15:04:05")
+		}
+	}
 }
 
 func HandleAdminListMailAppointments(c *app.RequestContext, db *sql.DB) {
@@ -154,12 +224,14 @@ func HandleAdminListMailAppointments(c *app.RequestContext, db *sql.DB) {
 	rows, err := db.Query(`SELECT ma.id, ma.detect_patient_id, ma.sale_order_id, ma.detection_plan_id,
 			ma.receiver_name, ma.receiver_phone, ma.province, ma.city, ma.district, ma.detail_address, ma.full_address,
 			ma.express_company, ma.tracking_number, ma.status, ma.notes, ma.shipped_at, ma.created_at, ma.updated_at,
-			p.name, p.patient_code, p.phone, so.sale_order_no, sp.name, dp.detection_number, dp.detection_date
+			p.name, p.patient_code, p.phone, so.sale_order_no, sp.name, dp.detection_number, dp.detection_date,
+			sp.detection_count, ct.name, p.detection_mode
 		FROM mail_address ma
 		JOIN detect_patient p ON ma.detect_patient_id = p.id
 		LEFT JOIN sale_order so ON ma.sale_order_id = so.id
 		LEFT JOIN sale_package sp ON so.sale_package_id = sp.id
 		LEFT JOIN sale_detection_plan dp ON ma.detection_plan_id = dp.id
+		LEFT JOIN setting_cancer_type ct ON so.setting_cancer_type_id = ct.id
 		WHERE `+whereSQL+`
 		ORDER BY ma.created_at DESC
 		LIMIT ? OFFSET ?`, queryArgs...)
@@ -176,6 +248,7 @@ func HandleAdminListMailAppointments(c *app.RequestContext, db *sql.DB) {
 		c.JSON(consts.StatusInternalServerError, ApiResponse{Code: 500, Success: false, Message: "查询失败", Data: nil})
 		return
 	}
+	enrichMailAppointmentTracking(db, list)
 
 	c.JSON(consts.StatusOK, ApiResponse{Code: 200, Success: true, Message: "获取成功", Data: utils.H{"list": list, "total": total}})
 }
@@ -211,7 +284,11 @@ func HandleAdminListSampleLogistics(c *app.RequestContext, db *sql.DB) {
 	if pageSize <= 0 || pageSize > 200 {
 		pageSize = 20
 	}
-	conditions := []string{"1=1"}
+	conditions := []string{
+		"COALESCE(s.sample_status, '') NOT IN ('received', 'processing', 'tested', 'completed')",
+		"COALESCE(e.direction, 'inbound') = 'inbound'",
+		"COALESCE(TRIM(e.tracking_number), '') <> ''",
+	}
 	args := []interface{}{}
 	if userID, ok := GetUserID(c); ok {
 		roleNames := getUserRoleNames(db, userID)
@@ -309,10 +386,17 @@ func HandleAdminUpdateMailAppointment(c *app.RequestContext, db *sql.DB) {
 	}
 	_, err = db.Exec(`UPDATE mail_address
 		SET express_company = ?, tracking_number = ?, status = ?, notes = ?,
+			express_status = CASE WHEN ? <> '' THEN 'pending' ELSE express_status END,
+			express_route_json = CASE WHEN ? <> '' THEN NULL ELSE express_route_json END,
+			express_delivered_at = CASE WHEN ? <> '' THEN NULL ELSE express_delivered_at END,
+			express_last_query_at = CASE WHEN ? <> '' THEN NULL ELSE express_last_query_at END,
+			express_last_query_error = CASE WHEN ? <> '' THEN '' ELSE express_last_query_error END,
 			shipped_at = CASE WHEN ? = 'shipped' AND shipped_at IS NULL THEN NOW() ELSE shipped_at END,
 			updated_at = NOW()
 		WHERE id = ?`,
-		normalizeMailExpressCompany(req.ExpressCompany), strings.TrimSpace(req.TrackingNumber), status, req.Notes, status, id)
+		normalizeMailExpressCompany(req.ExpressCompany), strings.TrimSpace(req.TrackingNumber), status, req.Notes,
+		strings.TrimSpace(req.TrackingNumber), strings.TrimSpace(req.TrackingNumber), strings.TrimSpace(req.TrackingNumber),
+		strings.TrimSpace(req.TrackingNumber), strings.TrimSpace(req.TrackingNumber), status, id)
 	if err != nil {
 		log.Printf("Update mail appointment error: %v", err)
 		c.JSON(consts.StatusInternalServerError, ApiResponse{Code: 500, Success: false, Message: "保存失败", Data: utils.H{"error": err.Error()}})

@@ -753,12 +753,13 @@ const Edit: React.FC = () => {
         </Form>
       </Card>
       <Modal
-        title={reportPreview.name || '报告预览'}
+        title="报告预览与 AI 分析"
         open={reportPreview.open}
         onCancel={closeReportPreview}
         footer={null}
         width="min(1500px, 97vw)"
         className="patient-report-modal"
+        centered
         destroyOnClose
       >
         <div className="patient-report-layout">

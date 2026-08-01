@@ -39,7 +39,7 @@
     {
       "path": "pages/patient/appointment/index",
       "style": {
-        "navigationBarTitleText": "物流中心"
+          "navigationBarTitleText": "预约检测"
       }
     },
     {
@@ -88,6 +88,12 @@
       "path": "pages/patient/samples/index",
       "style": {
         "navigationBarTitleText": "我的样本"
+      }
+    },
+    {
+      "path": "pages/patient/sample-detail/index",
+      "style": {
+        "navigationBarTitleText": "样本详情"
       }
     },
     {

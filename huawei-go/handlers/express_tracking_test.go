@@ -18,7 +18,7 @@ func TestQueryExpressProviderUsesBaiduMarketplaceParameters(t *testing.T) {
 		if got := r.Header.Get("X-Bce-Signature"); got != "AppCode/test-app-code" {
 			t.Fatalf("signature = %q", got)
 		}
-		if got := r.URL.Query().Get("type"); got != "sfexpress" {
+		if got := r.URL.Query().Get("type"); got != "auto" {
 			t.Fatalf("type = %q", got)
 		}
 		if got := r.URL.Query().Get("number"); got != "SF123456" {
