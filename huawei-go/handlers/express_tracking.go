@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"bytes"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -113,11 +112,11 @@ func queryExpressProvider(client *http.Client, cfg expressProviderConfig, expres
 	}
 	endpoint.RawQuery = query.Encode()
 
-	request, err := http.NewRequest(http.MethodPost, endpoint.String(), bytes.NewReader(nil))
+	// 百度极速快递 API 使用查询参数的 GET 请求；空 POST 会被接口拒绝为 HTTP 400。
+	request, err := http.NewRequest(http.MethodGet, endpoint.String(), nil)
 	if err != nil {
 		return expressQueryResult{}, err
 	}
-	request.Header.Set("Content-Type", "application/json;charset=UTF-8")
 	request.Header.Set("X-Bce-Signature", "AppCode/"+cfg.AppKey)
 
 	if client == nil {
@@ -130,7 +129,11 @@ func queryExpressProvider(client *http.Client, cfg expressProviderConfig, expres
 	defer response.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(response.Body, 2<<20))
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return expressQueryResult{}, fmt.Errorf("快递查询接口返回 HTTP %d", response.StatusCode)
+		message := truncateExpressText(string(body), 500)
+		if message == "" {
+			return expressQueryResult{}, fmt.Errorf("快递查询接口返回 HTTP %d", response.StatusCode)
+		}
+		return expressQueryResult{}, fmt.Errorf("快递查询接口返回 HTTP %d: %s", response.StatusCode, message)
 	}
 
 	var providerResponse expressProviderResponse

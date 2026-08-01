@@ -1736,6 +1736,7 @@ func getSampleData(c *app.RequestContext, db *sql.DB) (interface{}, error) {
 
 	// 使用实际返回的样本列表长度作为总数，确保总数与返回的列表一致
 	enrichSamplesWithReportStatus(db, detect_samples)
+	enrichSamplesWithPanelMatches(db, detect_samples)
 	total := len(detect_samples)
 
 	// 返回样本列表
@@ -1743,6 +1744,46 @@ func getSampleData(c *app.RequestContext, db *sql.DB) (interface{}, error) {
 		"list":  detect_samples,
 		"total": total,
 	}, nil
+}
+
+// enrichSamplesWithPanelMatches exposes the batch-level matching cache on an
+// individual sample response, so the result detail page does not need to know
+// about the batch implementation.
+func enrichSamplesWithPanelMatches(db *sql.DB, samples []utils.H) {
+	for _, sample := range samples {
+		batchID, batchOK := sample["batch_id"].(int)
+		sampleCode, codeOK := sample["sample_code"].(string)
+		if !batchOK || batchID <= 0 || !codeOK || strings.TrimSpace(sampleCode) == "" {
+			continue
+		}
+
+		var idsJSON, matchesJSON, genesJSON sql.NullString
+		err := db.QueryRow(`SELECT matched_panel_ids_json, panel_matches_json, COALESCE(sample_genes_json, '')
+			FROM detect_sample_panel_match WHERE batch_id = ? AND sample_code = ?`, batchID, sampleCode).
+			Scan(&idsJSON, &matchesJSON, &genesJSON)
+		if err != nil {
+			if err != sql.ErrNoRows {
+				log.Printf("Load panel matches for sample %s: %v", sampleCode, err)
+			}
+			continue
+		}
+
+		var matchedIDs []int
+		var panelMatches []utils.H
+		var sampleGenes []string
+		if idsJSON.Valid && strings.TrimSpace(idsJSON.String) != "" {
+			_ = json.Unmarshal([]byte(idsJSON.String), &matchedIDs)
+		}
+		if matchesJSON.Valid && strings.TrimSpace(matchesJSON.String) != "" {
+			_ = json.Unmarshal([]byte(matchesJSON.String), &panelMatches)
+		}
+		if genesJSON.Valid && strings.TrimSpace(genesJSON.String) != "" {
+			_ = json.Unmarshal([]byte(genesJSON.String), &sampleGenes)
+		}
+		sample["matched_panel_ids"] = matchedIDs
+		sample["panel_matches"] = panelMatches
+		sample["sample_genes"] = sampleGenes
+	}
 }
 
 func enrichSamplesWithReportStatus(db *sql.DB, samples []utils.H) {

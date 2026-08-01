@@ -89,7 +89,7 @@ const SampleList: React.FC = () => {
   };
 
   const handleView = (record: any) => {
-    navigate(`/result/detail/${encodeURIComponent(record.sample_code)}`);
+    navigate(`/sample/detail/${encodeURIComponent(record.sample_code)}`);
   };
 
   const handleEdit = async (record: any) => {

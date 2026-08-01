@@ -4,16 +4,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
 func TestQueryExpressProviderUsesBaiduMarketplaceParameters(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Fatalf("method = %s, want POST", r.Method)
-		}
-		if got := r.Header.Get("Content-Type"); got != "application/json;charset=UTF-8" {
-			t.Fatalf("content type = %q", got)
+		if r.Method != http.MethodGet {
+			t.Fatalf("method = %s, want GET", r.Method)
 		}
 		if got := r.Header.Get("X-Bce-Signature"); got != "AppCode/test-app-code" {
 			t.Fatalf("signature = %q", got)
@@ -54,6 +52,19 @@ func TestQueryExpressProviderUsesBaiduMarketplaceParameters(t *testing.T) {
 	}
 	if result.Status != "in_transit" || len(result.Route) != 1 {
 		t.Fatalf("unexpected result: %#v", result)
+	}
+}
+
+func TestQueryExpressProviderIncludesProviderErrorBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"msg":"number parameter is invalid"}`))
+	}))
+	defer server.Close()
+
+	_, err := queryExpressProvider(server.Client(), expressProviderConfig{Enabled: true, URL: server.URL, AppKey: "test-app-code"}, "auto", "bad", "")
+	if err == nil || !strings.Contains(err.Error(), "number parameter is invalid") {
+		t.Fatalf("error = %v, want provider response", err)
 	}
 }
 
