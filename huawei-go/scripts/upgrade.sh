@@ -113,37 +113,57 @@ monitor_download() {
   done
 }
 
+download_asset_part() {
+  local asset_id="$1" begin="$2" end="$3" part_path="$4" expected_size=$((end - begin + 1)) attempt actual_size=0
+  trap - ERR
+  rm -f -- "$part_path"
+  for attempt in 1 2 3 4 5; do
+    if github_curl \
+      --header "Accept: application/octet-stream" \
+      --range "$begin-$end" \
+      "https://api.github.com/repos/$REPOSITORY/releases/assets/$asset_id" \
+      --output "$part_path"; then
+      actual_size="$(stat -c %s "$part_path")"
+      [[ "$actual_size" == "$expected_size" ]] && return 0
+    fi
+    rm -f -- "$part_path"
+    sleep "$attempt"
+  done
+  return 1
+}
+
 download_asset_parts() {
-  local asset_id="$1" parts_dir="$2" part_size=$((4 * 1024 * 1024)) index=0 begin end expected_size part_path attempt actual_size
+  local asset_id="$1" parts_dir="$2" part_size=$((4 * 1024 * 1024)) concurrency="${SMART_INSPECT_DOWNLOAD_CONNECTIONS:-4}"
+  local index=0 begin end expected_size part_path pid status=0
+  local -a pids=()
+  [[ "$concurrency" =~ ^[1-8]$ ]] || concurrency=4
   mkdir -p "$parts_dir"
   for ((begin = 0; begin < DOWNLOAD_TOTAL_BYTES; begin += part_size)); do
     end=$((begin + part_size - 1))
     [[ "$end" -lt "$DOWNLOAD_TOTAL_BYTES" ]] || end=$((DOWNLOAD_TOTAL_BYTES - 1))
     expected_size=$((end - begin + 1))
     part_path="$parts_dir/$(printf '%06d' "$index").part"
-    actual_size="$(stat -c %s "$part_path" 2>/dev/null || printf '0')"
-    if [[ "$actual_size" != "$expected_size" ]]; then
-      rm -f -- "$part_path"
-      for attempt in 1 2 3 4 5; do
-        if github_curl \
-          --header "Accept: application/octet-stream" \
-          --range "$begin-$end" \
-          "https://api.github.com/repos/$REPOSITORY/releases/assets/$asset_id" \
-          --output "$part_path"; then
-          actual_size="$(stat -c %s "$part_path")"
-          [[ "$actual_size" == "$expected_size" ]] && break
-        fi
-        rm -f -- "$part_path"
-        sleep "$attempt"
+    if [[ "$(stat -c %s "$part_path" 2>/dev/null || printf '0')" != "$expected_size" ]]; then
+      download_asset_part "$asset_id" "$begin" "$end" "$part_path" &
+      pids+=("$!")
+    fi
+    if [[ "${#pids[@]}" -ge "$concurrency" ]]; then
+      for pid in "${pids[@]}"; do
+        wait "$pid" || status=1
       done
-      [[ "${actual_size:-0}" == "$expected_size" ]] || return 1
+      [[ "$status" == "0" ]] || return 1
+      pids=()
     fi
     index=$((index + 1))
   done
+  for pid in "${pids[@]}"; do
+    wait "$pid" || status=1
+  done
+  return "$status"
 }
 
 download_asset() {
-  local asset_id="$1" archive="$2" parts_dir="$archive.parts" worker_pid monitor_pid worker_status part
+  local asset_id="$1" archive="$2" parts_dir="$UPGRADE_ROOT/cache/$DOWNLOAD_NAME.parts" worker_pid monitor_pid worker_status part
   download_asset_parts "$asset_id" "$parts_dir" &
   worker_pid=$!
   monitor_download "$worker_pid" "$parts_dir" &
@@ -349,6 +369,7 @@ download_release() {
   }
   expected_digest="${asset_digest#sha256:}"
   printf '%s  %s\n' "$expected_digest" "$archive" | sha256sum --check -
+  rm -rf -- "$UPGRADE_ROOT/cache/$asset.parts"
   tar -xzf "$archive" -C "$DOWNLOAD_DIR"
   package_root="$DOWNLOAD_DIR/SmartInspectPlatform-$TAG"
   [[ -x "$package_root/huawei-go/server" ]] || {
