@@ -320,6 +320,7 @@ func HandleAdminListSampleLogistics(c *app.RequestContext, db *sql.DB) {
 			p.name, p.patient_code, p.phone,
 			COALESCE(e.id, 0), COALESCE(e.direction, ''), COALESCE(e.express_company, ''),
 			COALESCE(e.tracking_number, ''), COALESCE(e.status, ''), COALESCE(e.latest_event_status, ''),
+			COALESCE(e.route_json, ''), COALESCE(e.last_query_error, ''), COALESCE(e.provider_message, ''),
 			e.delivered_at, e.updated_at
 		`+joinSQL+` WHERE `+whereSQL+`
 		ORDER BY s.sample_created_at DESC LIMIT ? OFFSET ?`, queryArgs...)
@@ -333,12 +334,13 @@ func HandleAdminListSampleLogistics(c *app.RequestContext, db *sql.DB) {
 	for rows.Next() {
 		var sampleID, expressID int
 		var sampleCode, sampleStatus, patientName, patientCode, patientPhone string
-		var direction, company, trackingNumber, expressStatus, latestEvent string
+		var direction, company, trackingNumber, expressStatus, latestEvent, routeJSON, lastQueryError, providerMessage string
 		var createdAt time.Time
 		var deliveredAt, expressUpdatedAt sql.NullTime
 		if err := rows.Scan(&sampleID, &sampleCode, &sampleStatus, &createdAt,
 			&patientName, &patientCode, &patientPhone, &expressID, &direction, &company,
-			&trackingNumber, &expressStatus, &latestEvent, &deliveredAt, &expressUpdatedAt); err != nil {
+			&trackingNumber, &expressStatus, &latestEvent, &routeJSON, &lastQueryError, &providerMessage,
+			&deliveredAt, &expressUpdatedAt); err != nil {
 			continue
 		}
 		item := utils.H{
@@ -347,6 +349,8 @@ func HandleAdminListSampleLogistics(c *app.RequestContext, db *sql.DB) {
 			"express_id": expressID, "direction": direction, "express_company": company,
 			"tracking_number": trackingNumber, "express_status": expressStatus,
 			"latest_event_status": latestEvent,
+			"last_query_error":    lastQueryError,
+			"provider_message":    providerMessage,
 			"current_location":    sampleLocationText(sampleStatus, expressStatus, direction),
 			"created_at":          createdAt.Format("2006-01-02 15:04:05"),
 		}
@@ -355,6 +359,12 @@ func HandleAdminListSampleLogistics(c *app.RequestContext, db *sql.DB) {
 		}
 		if expressUpdatedAt.Valid {
 			item["express_updated_at"] = expressUpdatedAt.Time.Format("2006-01-02 15:04:05")
+		}
+		if strings.TrimSpace(routeJSON) != "" {
+			var route []expressProviderEvent
+			if err := json.Unmarshal([]byte(routeJSON), &route); err == nil {
+				item["route"] = route
+			}
 		}
 		list = append(list, item)
 	}

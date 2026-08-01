@@ -10,6 +10,7 @@ import {
   Table,
   Tag,
   Tabs,
+  Tooltip,
   Upload,
   message,
 } from 'antd';
@@ -25,6 +26,25 @@ const expressCompanyOptions = [
   { label: '顺丰速运', value: '顺丰速运' },
   { label: '京东快递', value: '京东快递' },
 ];
+
+const renderTrackingTooltip = (record: any) => {
+  const route = Array.isArray(record.route) ? record.route : [];
+  return (
+    <div style={{ maxWidth: 420, maxHeight: 320, overflowY: 'auto', paddingRight: 4 }}>
+      <div style={{ marginBottom: 8, fontWeight: 500 }}>
+        {record.express_company || '自动识别中'} {record.tracking_number}
+      </div>
+      {record.last_query_error ? (
+        <div style={{ color: '#ff7875', whiteSpace: 'normal', lineHeight: 1.5 }}>{record.last_query_error}</div>
+      ) : route.length > 0 ? route.map((event: any, index: number) => (
+        <div key={`${event.time}-${index}`} style={{ paddingBottom: 10, borderLeft: '2px solid #1677ff', paddingLeft: 10, marginLeft: 4 }}>
+          <div style={{ whiteSpace: 'normal', lineHeight: 1.5 }}>{event.status}</div>
+          <div style={{ color: '#bfbfbf', fontSize: 12 }}>{event.time}</div>
+        </div>
+      )) : <div style={{ color: '#bfbfbf' }}>{record.latest_event_status || '暂无物流轨迹'}</div>}
+    </div>
+  );
+};
 
 const AppointmentManage: React.FC = () => {
   const [form] = Form.useForm();
@@ -278,12 +298,14 @@ const AppointmentManage: React.FC = () => {
       title: '物流',
       width: 240,
       render: (_: any, record: any) => (
-        <div>
-          <div>{record.tracking_number || '暂无运单'}</div>
-          <div style={{ color: '#8c8c8c', fontSize: 12 }}>
-            {[record.express_company, record.latest_event_status].filter(Boolean).join(' · ') || '-'}
+        record.tracking_number ? <Tooltip title={renderTrackingTooltip(record)} placement="topLeft" mouseEnterDelay={0.2}>
+          <div style={{ cursor: 'help' }}>
+            <div>{record.tracking_number}</div>
+            <div style={{ color: '#8c8c8c', fontSize: 12 }}>
+              {[record.express_company || '自动识别中', record.latest_event_status].filter(Boolean).join(' · ')}
+            </div>
           </div>
-        </div>
+        </Tooltip> : <div>暂无运单</div>
       ),
     },
     {
