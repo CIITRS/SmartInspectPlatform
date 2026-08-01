@@ -908,6 +908,13 @@ func EnsureSchema(db *sql.DB, dbName string) error {
 			return err
 		}
 	}
+	// Generated reports are disposable download artifacts. Clear legacy cache
+	// pointers so every preview or download is rendered from current data.
+	if _, err := db.Exec(`UPDATE detect_report
+		SET file_path = '', pdf_generation_status = 'pending'
+		WHERE REPLACE(file_path, '\\', '/') LIKE 'file/temp/detect_report/%'`); err != nil {
+		return err
+	}
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS detect_report_change_log (
 		id INT AUTO_INCREMENT PRIMARY KEY,
 		report_id INT NOT NULL,

@@ -2009,7 +2009,7 @@ func HandleReviewReport(c *app.RequestContext, db *sql.DB) {
 			req.Status, reviewedBy, id)
 	} else if req.Status == "reviewed" {
 		// 审核通过，重置PDF生成状态为pending
-		_, updateErr = tx.Exec("UPDATE detect_report SET status = ?, reviewed_by = ?, reviewed_time = NOW(), pdf_generation_status = 'pending', updated_at = NOW() WHERE id = ?",
+		_, updateErr = tx.Exec("UPDATE detect_report SET status = ?, reviewed_by = ?, reviewed_time = NOW(), file_path = '', pdf_generation_status = 'pending', updated_at = NOW() WHERE id = ?",
 			req.Status, reviewedBy, id)
 		if updateErr == nil && currentPatientID > 0 && currentBatchID > 0 {
 			linkedRows, linkedErr := tx.Query(`SELECT r.id, COALESCE(r.sample_id, 0)
@@ -2038,7 +2038,7 @@ func HandleReviewReport(c *app.RequestContext, db *sql.DB) {
 					if linkedID == id {
 						continue
 					}
-					if _, err := tx.Exec("UPDATE detect_report SET status = ?, reviewed_by = ?, reviewed_time = NOW(), pdf_generation_status = 'pending', updated_at = NOW() WHERE id = ?",
+					if _, err := tx.Exec("UPDATE detect_report SET status = ?, reviewed_by = ?, reviewed_time = NOW(), file_path = '', pdf_generation_status = 'pending', updated_at = NOW() WHERE id = ?",
 						req.Status, reviewedBy, linkedID); err != nil {
 						updateErr = err
 						break
@@ -2085,19 +2085,6 @@ func HandleReviewReport(c *app.RequestContext, db *sql.DB) {
 			Data:    utils.H{"error": err.Error()},
 		})
 		return
-	}
-
-	if req.Status == "reviewed" {
-		for _, reportID := range reviewedReportIDs {
-			filePath, pdfErr := generateReportPDFByMode(db, reportID, reportPDFModeFull)
-			if pdfErr != nil {
-				log.Printf("Failed to generate reviewed report PDF for report %d: %v", reportID, pdfErr)
-				continue
-			}
-			if _, err := db.Exec("UPDATE detect_report SET file_path = ?, pdf_generation_status = 'completed', updated_at = NOW() WHERE id = ?", filePath, reportID); err != nil {
-				log.Printf("Failed to store reviewed report PDF path for report %d: %v", reportID, err)
-			}
-		}
 	}
 
 	if req.Status == "reviewed" && currentStatus != "reviewed" {
@@ -2207,29 +2194,9 @@ func HandleDownloadPatientReport(c *app.RequestContext, db *sql.DB) {
 	})
 }
 
-// cleanupExpiredPDFs 清理过期的临时PDF文件（超过10分钟的兜底清理）
+// cleanupExpiredPDFs 清理未被下载流程正常回收的临时报告文件。
 func cleanupExpiredPDFs() {
-	pdfDir := filepath.Join("file", "temp", "detect_report")
-	files, err := filepath.Glob(filepath.Join(pdfDir, "*.pdf"))
-	if err != nil {
-		log.Printf("Failed to list PDF files: %v", err)
-		return
-	}
-
-	for _, file := range files {
-		fileInfo, err := os.Stat(file)
-		if err != nil {
-			continue
-		}
-
-		if time.Since(fileInfo.ModTime()) > 10*time.Minute {
-			if err := os.Remove(file); err != nil {
-				log.Printf("Failed to delete expired PDF file: %v", err)
-			} else {
-				log.Printf("Deleted expired PDF file: %s", file)
-			}
-		}
-	}
+	cleanupManagedTemporaryFiles(generatedReportOrphanMaxAge)
 }
 
 // HandleDownloadReportPdf 处理报告PDF下载请求（现场生成）
@@ -2282,12 +2249,6 @@ func HandleDownloadReportPdf(c *app.RequestContext, db *sql.DB) {
 		})
 		return
 	}
-	defer func() {
-		if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
-			log.Printf("Failed to delete temporary PDF file: %v", err)
-		}
-	}()
-
 	// 设置响应头，触发下载
 	fileName := fmt.Sprintf("报告_%s_%s_%s.pdf", sampleCode, detect_patientName, mode)
 	c.Header("Content-Type", "application/pdf")
@@ -2312,6 +2273,7 @@ func HandleDownloadReportPdf(c *app.RequestContext, db *sql.DB) {
 	}
 
 	c.Data(consts.StatusOK, "application/pdf", fileData)
+	scheduleManagedTemporaryFileRemoval(filePath)
 }
 
 // HandleDownloadConciseTestPdf generates a concise report PDF with fixed test data.
@@ -2398,12 +2360,6 @@ func HandleDownloadConciseTestPdf(c *app.RequestContext, db *sql.DB) {
 		c.JSON(consts.StatusInternalServerError, ApiResponse{Code: 500, Success: false, Message: "生成测试PDF失败"})
 		return
 	}
-	defer func() {
-		if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
-			log.Printf("Failed to delete concise test PDF: %v", err)
-		}
-	}()
-
 	fileData, err := os.ReadFile(filePath)
 	if err != nil {
 		log.Printf("Failed to read concise test PDF: %v", err)
@@ -2415,6 +2371,7 @@ func HandleDownloadConciseTestPdf(c *app.RequestContext, db *sql.DB) {
 	c.Header("Content-Disposition", "attachment; filename=concise-test-report.pdf")
 	c.Header("Cache-Control", "no-store")
 	c.Data(consts.StatusOK, "application/pdf", fileData)
+	scheduleManagedTemporaryFileRemoval(filePath)
 }
 
 // HandleBatchDownloadReports 批量生成报告PDF并打包为ZIP下载。

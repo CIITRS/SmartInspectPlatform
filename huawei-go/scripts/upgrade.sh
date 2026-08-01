@@ -32,6 +32,7 @@ SUPERVISOR_CONFIG="${SMART_INSPECT_SUPERVISOR_CONFIG:-/etc/supervisor/supervisor
 UPGRADE_STATUS_FILE="${SMART_INSPECT_UPGRADE_STATUS_FILE:-$APP_DIR/logs/upgrade-status.json}"
 UPGRADE_STARTED_AT="${SMART_INSPECT_UPGRADE_STARTED_AT:-$(date -u '+%Y-%m-%dT%H:%M:%SZ')}"
 UPGRADE_STEP=1
+UPGRADE_MODE="release"
 DOWNLOAD_NAME=""
 DOWNLOAD_BYTES=0
 DOWNLOAD_TOTAL_BYTES=0
@@ -222,6 +223,42 @@ health_check() {
   return 1
 }
 
+prune_deployment_files() {
+  local path index
+  [[ "$UPGRADE_MODE" == "release" ]] || return 0
+  local source_artifacts=(
+    "$APP_DIR/.gocache"
+    "$APP_DIR/cmd"
+    "$APP_DIR/config"
+    "$APP_DIR/handlers"
+    "$APP_DIR/internal"
+    "$APP_DIR/pkg"
+    "$APP_DIR/config.go"
+    "$APP_DIR/main.go"
+    "$APP_DIR/go.mod"
+    "$APP_DIR/go.sum"
+  )
+
+  for path in "${source_artifacts[@]}"; do
+    [[ -e "$path" ]] && rm -rf -- "$path"
+  done
+
+  # Old manual deployment backups are superseded by the verified upgrader.
+  [[ -d "$APP_DIR/.deploy-backups" ]] && rm -rf -- "$APP_DIR/.deploy-backups"
+
+  # Interrupted run directories are disposable after a successful health check.
+  while IFS= read -r path; do
+    [[ "$path" == "$RUN_DIR" ]] || rm -rf -- "$path"
+  done < <(find "$UPGRADE_ROOT" -mindepth 1 -maxdepth 1 -type d -name 'run-*' -print)
+
+  # Keep the two newest verified rollback points and discard older copies.
+  index=0
+  while IFS= read -r path; do
+    index=$((index + 1))
+    [[ "$index" -le 2 ]] || rm -rf -- "$path"
+  done < <(find "$UPGRADE_ROOT/backups" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' | sort -nr | cut -d' ' -f2-)
+}
+
 cleanup() {
   rm -rf -- "$RUN_DIR"
 }
@@ -351,9 +388,11 @@ log "Service manager: $SERVICE_MANAGER ($SERVICE_TARGET)"
 write_status 2 "running" "正在获取并校验 GitHub 发布包"
 if [[ -f "$APP_DIR/go.mod" && -d "$APP_DIR/../huawei-ui" ]] &&
   git -C "$APP_DIR/.." rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  UPGRADE_MODE="source"
   log "Upgrade mode: source build"
   build_from_source
 else
+  UPGRADE_MODE="release"
   log "Upgrade mode: verified GitHub Release"
   download_release
 fi
@@ -396,6 +435,8 @@ write_status 5 "running" "正在重启系统服务"
 restart_service
 write_status 6 "running" "服务已重启，正在执行健康检查"
 health_check
+write_status 6 "running" "健康检查通过，正在清理旧源码和升级缓存"
+prune_deployment_files
 printf '%s\n' "$TAG" >"$APP_DIR/VERSION"
 UPGRADE_APPLIED=0
 rm -rf -- "$STATIC_PREVIOUS"
