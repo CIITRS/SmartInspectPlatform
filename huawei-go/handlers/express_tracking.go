@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -9,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,9 +28,11 @@ const (
 )
 
 type expressProviderConfig struct {
-	Enabled bool
-	URL     string
-	AppKey  string
+	Enabled   bool
+	URL       string
+	AuthMode  string
+	AppKey    string
+	AppSecret string
 }
 
 type expressProviderEvent struct {
@@ -88,15 +93,21 @@ func expressConfig() expressProviderConfig {
 			"EXPRESS_API_URL",
 			"https://jisuexpress.api.bdymkt.com/express/query",
 		)),
-		AppKey: strings.TrimSpace(getRuntimeSetting("EXPRESS_APP_KEY", "EXPRESS_APP_KEY", "")),
+		AuthMode:  strings.ToLower(strings.TrimSpace(getRuntimeSetting("EXPRESS_AUTH_MODE", "EXPRESS_AUTH_MODE", "appcode"))),
+		AppKey:    strings.TrimSpace(getRuntimeSetting("EXPRESS_APP_KEY", "EXPRESS_APP_KEY", "")),
+		AppSecret: strings.TrimSpace(getRuntimeSetting("EXPRESS_APP_SECRET", "EXPRESS_APP_SECRET", "")),
 	}
+}
+
+func isExpressV1Auth(cfg expressProviderConfig) bool {
+	return cfg.AuthMode == "app" || cfg.AuthMode == "app_v1" || cfg.AuthMode == "v1"
 }
 
 func queryExpressProvider(client *http.Client, cfg expressProviderConfig, expressType, number, mobile string) (expressQueryResult, error) {
 	if !cfg.Enabled {
 		return expressQueryResult{}, errors.New("快递查询功能未启用")
 	}
-	if cfg.URL == "" || cfg.AppKey == "" {
+	if cfg.URL == "" || cfg.AppKey == "" || (isExpressV1Auth(cfg) && cfg.AppSecret == "") {
 		return expressQueryResult{}, errors.New("快递查询 API 配置未完成")
 	}
 	endpoint, err := url.Parse(cfg.URL)
@@ -104,7 +115,7 @@ func queryExpressProvider(client *http.Client, cfg expressProviderConfig, expres
 		return expressQueryResult{}, errors.New("快递查询 API 地址无效")
 	}
 	query := endpoint.Query()
-	// 百度极速快递接口统一使用 auto 自动识别承运公司。
+	// 百度极速快递接口使用 auto 自动识别承运公司。
 	query.Set("type", "auto")
 	query.Set("number", strings.TrimSpace(number))
 	if strings.TrimSpace(mobile) != "" {
@@ -112,12 +123,18 @@ func queryExpressProvider(client *http.Client, cfg expressProviderConfig, expres
 	}
 	endpoint.RawQuery = query.Encode()
 
-	// 百度极速快递 API 使用查询参数的 GET 请求；空 POST 会被接口拒绝为 HTTP 400。
-	request, err := http.NewRequest(http.MethodGet, endpoint.String(), nil)
+	request, err := http.NewRequest(http.MethodPost, endpoint.String(), nil)
 	if err != nil {
 		return expressQueryResult{}, err
 	}
-	request.Header.Set("X-Bce-Signature", "AppCode/"+cfg.AppKey)
+	request.Header.Set("Content-Type", "application/json;charset=UTF-8")
+	if isExpressV1Auth(cfg) {
+		if err := signExpressV1Request(request, cfg.AppKey, cfg.AppSecret, time.Now().UTC()); err != nil {
+			return expressQueryResult{}, err
+		}
+	} else {
+		request.Header.Set("X-Bce-Signature", "AppCode/"+cfg.AppKey)
+	}
 
 	if client == nil {
 		client = &http.Client{Timeout: 15 * time.Second}
@@ -196,6 +213,84 @@ func queryExpressProvider(client *http.Client, cfg expressProviderConfig, expres
 		result.Route = nil
 	}
 	return result, nil
+}
+
+func signExpressV1Request(request *http.Request, appKey, appSecret string, now time.Time) error {
+	if request == nil || strings.TrimSpace(appKey) == "" || strings.TrimSpace(appSecret) == "" {
+		return errors.New("快递查询 V1 签名配置未完成")
+	}
+	if request.URL == nil {
+		return errors.New("快递查询请求地址无效")
+	}
+	host := request.Host
+	if host == "" {
+		host = request.URL.Host
+	}
+	if host == "" {
+		return errors.New("快递查询请求 Host 无效")
+	}
+	contentType := strings.TrimSpace(request.Header.Get("Content-Type"))
+	if contentType == "" {
+		contentType = "application/json;charset=UTF-8"
+		request.Header.Set("Content-Type", contentType)
+	}
+	date := now.UTC().Format("2006-01-02T15:04:05Z")
+	authPrefix := fmt.Sprintf("bce-auth-v1/%s/%s/1800", appKey, date)
+	signedHeaders := "content-type;host"
+	canonicalRequest := strings.Join([]string{
+		request.Method,
+		bceEncodePath(request.URL.Path),
+		bceCanonicalQuery(request.URL.Query()),
+		"content-type:" + bceURIEncode(contentType),
+		"host:" + bceURIEncode(host),
+	}, "\n")
+	signingKey := bceHMACSHA256([]byte(appSecret), authPrefix)
+	signature := fmt.Sprintf("%x", bceHMACSHA256(signingKey, canonicalRequest))
+	request.Header.Set("X-Bce-Signature", authPrefix+"/"+signedHeaders+"/"+signature)
+	return nil
+}
+
+func bceHMACSHA256(key []byte, value string) []byte {
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write([]byte(value))
+	return mac.Sum(nil)
+}
+
+func bceEncodePath(path string) string {
+	if path == "" {
+		path = "/"
+	}
+	return strings.ReplaceAll(bceURIEncode(path), "%2F", "/")
+}
+
+func bceCanonicalQuery(values url.Values) string {
+	parts := make([]string, 0)
+	for key, items := range values {
+		if strings.EqualFold(key, "authorization") {
+			continue
+		}
+		if len(items) == 0 {
+			parts = append(parts, bceURIEncode(key)+"=")
+			continue
+		}
+		for _, value := range items {
+			parts = append(parts, bceURIEncode(key)+"="+bceURIEncode(value))
+		}
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, "&")
+}
+
+func bceURIEncode(value string) string {
+	var builder strings.Builder
+	for _, ch := range []byte(value) {
+		if (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' || ch == '.' || ch == '~' {
+			builder.WriteByte(ch)
+			continue
+		}
+		fmt.Fprintf(&builder, "%%%02X", ch)
+	}
+	return builder.String()
 }
 
 func parseExpressEventTime(value string) (time.Time, error) {

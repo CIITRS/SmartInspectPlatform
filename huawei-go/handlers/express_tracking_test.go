@@ -6,12 +6,16 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestQueryExpressProviderUsesBaiduMarketplaceParameters(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			t.Fatalf("method = %s, want GET", r.Method)
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %s, want POST", r.Method)
+		}
+		if got := r.Header.Get("Content-Type"); got != "application/json;charset=UTF-8" {
+			t.Fatalf("content type = %q", got)
 		}
 		if got := r.Header.Get("X-Bce-Signature"); got != "AppCode/test-app-code" {
 			t.Fatalf("signature = %q", got)
@@ -52,6 +56,21 @@ func TestQueryExpressProviderUsesBaiduMarketplaceParameters(t *testing.T) {
 	}
 	if result.Status != "in_transit" || len(result.Route) != 1 {
 		t.Fatalf("unexpected result: %#v", result)
+	}
+}
+
+func TestSignExpressV1Request(t *testing.T) {
+	request, err := http.NewRequest(http.MethodPost, "http://gwgp-65bmfhhrext.n.bdcloudapi.com/express/query?number=SF1&type=auto", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json;charset=UTF-8")
+	if err := signExpressV1Request(request, "test-key", "test-secret", time.Date(2026, 8, 1, 8, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	wantPrefix := "bce-auth-v1/test-key/2026-08-01T08:00:00Z/1800/content-type;host/"
+	if !strings.HasPrefix(request.Header.Get("X-Bce-Signature"), wantPrefix) {
+		t.Fatalf("signature = %q, want prefix %q", request.Header.Get("X-Bce-Signature"), wantPrefix)
 	}
 }
 
