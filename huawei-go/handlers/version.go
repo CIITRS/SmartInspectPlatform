@@ -35,14 +35,19 @@ type githubRelease struct {
 }
 
 type systemUpgradeStatus struct {
-	Version     string `json:"version"`
-	State       string `json:"state"`
-	CurrentStep int    `json:"current_step"`
-	TotalSteps  int    `json:"total_steps"`
-	Progress    int    `json:"progress"`
-	Message     string `json:"message"`
-	StartedAt   string `json:"started_at,omitempty"`
-	UpdatedAt   string `json:"updated_at,omitempty"`
+	Version            string `json:"version"`
+	State              string `json:"state"`
+	CurrentStep        int    `json:"current_step"`
+	TotalSteps         int    `json:"total_steps"`
+	Progress           int    `json:"progress"`
+	Message            string `json:"message"`
+	StartedAt          string `json:"started_at,omitempty"`
+	UpdatedAt          string `json:"updated_at,omitempty"`
+	DownloadName       string `json:"download_name,omitempty"`
+	DownloadBytes      int64  `json:"download_bytes,omitempty"`
+	DownloadTotalBytes int64  `json:"download_total_bytes,omitempty"`
+	DownloadSpeedBPS   int64  `json:"download_speed_bps,omitempty"`
+	DownloadPercent    int    `json:"download_percent,omitempty"`
 }
 
 const systemUpgradeTotalSteps = 7
@@ -144,6 +149,12 @@ func readSystemUpgradeStatus() systemUpgradeStatus {
 	}
 	if status.Progress > 100 {
 		status.Progress = 100
+	}
+	if status.DownloadPercent < 0 {
+		status.DownloadPercent = 0
+	}
+	if status.DownloadPercent > 100 {
+		status.DownloadPercent = 100
 	}
 	return status
 }

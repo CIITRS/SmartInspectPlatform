@@ -47,6 +47,8 @@ func TestSystemUpgradeStatusPersistsAcrossProcessRestart(t *testing.T) {
 	want := systemUpgradeStatus{
 		Version: "v0.2.4", State: "running", CurrentStep: 4, Progress: 57,
 		Message: "正在替换系统文件", StartedAt: "2026-08-01T00:00:00Z",
+		DownloadName: "release.tar.gz", DownloadBytes: 512, DownloadTotalBytes: 1024,
+		DownloadSpeedBPS: 256, DownloadPercent: 50,
 	}
 	if err := writeSystemUpgradeStatus(want); err != nil {
 		t.Fatalf("write upgrade status: %v", err)
@@ -57,5 +59,8 @@ func TestSystemUpgradeStatusPersistsAcrossProcessRestart(t *testing.T) {
 	}
 	if got.TotalSteps != systemUpgradeTotalSteps || got.UpdatedAt == "" {
 		t.Fatalf("missing normalized status metadata: %#v", got)
+	}
+	if got.DownloadName != want.DownloadName || got.DownloadBytes != want.DownloadBytes || got.DownloadPercent != want.DownloadPercent {
+		t.Fatalf("missing download progress metadata: %#v", got)
 	}
 }

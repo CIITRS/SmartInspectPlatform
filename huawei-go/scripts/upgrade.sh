@@ -32,6 +32,11 @@ SUPERVISOR_CONFIG="${SMART_INSPECT_SUPERVISOR_CONFIG:-/etc/supervisor/supervisor
 UPGRADE_STATUS_FILE="${SMART_INSPECT_UPGRADE_STATUS_FILE:-$APP_DIR/logs/upgrade-status.json}"
 UPGRADE_STARTED_AT="${SMART_INSPECT_UPGRADE_STARTED_AT:-$(date -u '+%Y-%m-%dT%H:%M:%SZ')}"
 UPGRADE_STEP=1
+DOWNLOAD_NAME=""
+DOWNLOAD_BYTES=0
+DOWNLOAD_TOTAL_BYTES=0
+DOWNLOAD_SPEED_BPS=0
+DOWNLOAD_PERCENT=0
 
 log() {
   printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
@@ -41,12 +46,16 @@ write_status() {
   local step="$1" state="$2" message="$3" progress updated_at temporary
   UPGRADE_STEP="$step"
   progress=$((step * 100 / 7))
+  if [[ "$step" == "2" && "$DOWNLOAD_TOTAL_BYTES" -gt 0 ]]; then
+    progress=$((14 + DOWNLOAD_PERCENT * 14 / 100))
+  fi
   [[ "$state" == "completed" ]] && progress=100
   updated_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   mkdir -p "$(dirname "$UPGRADE_STATUS_FILE")"
   temporary="$UPGRADE_STATUS_FILE.tmp.$$"
-  printf '{"version":"%s","state":"%s","current_step":%d,"total_steps":7,"progress":%d,"message":"%s","started_at":"%s","updated_at":"%s"}\n' \
-    "$TAG" "$state" "$step" "$progress" "$message" "$UPGRADE_STARTED_AT" "$updated_at" >"$temporary"
+  printf '{"version":"%s","state":"%s","current_step":%d,"total_steps":7,"progress":%d,"message":"%s","started_at":"%s","updated_at":"%s","download_name":"%s","download_bytes":%d,"download_total_bytes":%d,"download_speed_bps":%d,"download_percent":%d}\n' \
+    "$TAG" "$state" "$step" "$progress" "$message" "$UPGRADE_STARTED_AT" "$updated_at" \
+    "$DOWNLOAD_NAME" "$DOWNLOAD_BYTES" "$DOWNLOAD_TOTAL_BYTES" "$DOWNLOAD_SPEED_BPS" "$DOWNLOAD_PERCENT" >"$temporary"
   mv -f "$temporary" "$UPGRADE_STATUS_FILE"
 }
 
@@ -82,6 +91,44 @@ github_curl() {
   fi
   curl --http1.1 --fail --location --retry 3 --retry-all-errors --connect-timeout 15 \
     --silent --show-error "${headers[@]}" "$@"
+}
+
+monitor_download() {
+  local curl_pid="$1" archive="$2" started_at now elapsed
+  started_at="$(date +%s)"
+  while kill -0 "$curl_pid" 2>/dev/null; do
+    if [[ -f "$archive" ]]; then
+      DOWNLOAD_BYTES="$(stat -c %s "$archive" 2>/dev/null || printf '0')"
+    fi
+    now="$(date +%s)"
+    elapsed=$((now - started_at))
+    [[ "$elapsed" -gt 0 ]] && DOWNLOAD_SPEED_BPS=$((DOWNLOAD_BYTES / elapsed))
+    if [[ "$DOWNLOAD_TOTAL_BYTES" -gt 0 ]]; then
+      DOWNLOAD_PERCENT=$((DOWNLOAD_BYTES * 100 / DOWNLOAD_TOTAL_BYTES))
+      [[ "$DOWNLOAD_PERCENT" -gt 100 ]] && DOWNLOAD_PERCENT=100
+    fi
+    write_status 2 "running" "正在下载 GitHub 发布包"
+    sleep 1
+  done
+}
+
+download_asset() {
+  local asset_id="$1" archive="$2" curl_pid monitor_pid curl_status
+  github_curl \
+    --continue-at - \
+    --header "Accept: application/octet-stream" \
+    "https://api.github.com/repos/$REPOSITORY/releases/assets/$asset_id" \
+    --output "$archive" &
+  curl_pid=$!
+  monitor_download "$curl_pid" "$archive" &
+  monitor_pid=$!
+  curl_status=0
+  wait "$curl_pid" || curl_status=$?
+  wait "$monitor_pid" || true
+  [[ "$curl_status" == "0" ]] || return "$curl_status"
+  DOWNLOAD_BYTES="$(stat -c %s "$archive")"
+  DOWNLOAD_PERCENT=100
+  write_status 2 "running" "发布包下载完成，正在校验完整性"
 }
 
 detect_binary() {
@@ -222,10 +269,13 @@ download_release() {
     exit 1
   }
   log "Downloading verified GitHub Release asset $asset."
-  github_curl \
-    --header "Accept: application/octet-stream" \
-    "https://api.github.com/repos/$REPOSITORY/releases/assets/$asset_id" \
-    --output "$archive"
+  DOWNLOAD_NAME="$asset"
+  DOWNLOAD_TOTAL_BYTES="$asset_size"
+  DOWNLOAD_BYTES=0
+  DOWNLOAD_SPEED_BPS=0
+  DOWNLOAD_PERCENT=0
+  write_status 2 "running" "正在下载 GitHub 发布包"
+  download_asset "$asset_id" "$archive"
   actual_size="$(stat -c %s "$archive")"
   [[ "$actual_size" == "$asset_size" ]] || {
     echo "Release asset size mismatch: got $actual_size, expected $asset_size." >&2
