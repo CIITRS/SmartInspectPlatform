@@ -61,3 +61,58 @@ jobs:
             SmartInspectPlatform-*-linux-amd64.tar.gz
             SmartInspectPlatform-*-linux-amd64.tar.gz.sha256
 
+  windows-amd64:
+    needs: linux-amd64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: huawei-ui/package-lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: huawei-go/go.mod
+          cache-dependency-path: huawei-go/go.sum
+
+      - name: Build admin UI
+        working-directory: huawei-ui
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build backend
+        working-directory: huawei-go
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          Remove-Item static -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path static | Out-Null
+          Copy-Item ../huawei-ui/dist/* static -Recurse -Force
+          go test ./...
+          $buildDate = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+          go build -trimpath `
+            -ldflags "-s -w -X huawei-go/internal/appversion.CurrentVersion=$env:RELEASE_TAG -X huawei-go/internal/appversion.BuildCommit=$env:RELEASE_SHA -X huawei-go/internal/appversion.BuildDate=$buildDate" `
+            -o server.exe .
+
+      - name: Package release
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $root = "SmartInspectPlatform-$env:RELEASE_TAG"
+          New-Item -ItemType Directory -Path "$root/huawei-go" | Out-Null
+          Copy-Item huawei-go/server.exe "$root/huawei-go/"
+          Copy-Item huawei-go/static,huawei-go/Template,huawei-go/fonts,huawei-go/scripts "$root/huawei-go/" -Recurse
+          Copy-Item huawei-go/.env.example,huawei-go/go.mod,huawei-go/go.sum,README.md,LICENSE,VERSION,CHANGELOG.md "$root/"
+          Compress-Archive -Path $root -DestinationPath "$root-windows-amd64.zip"
+          (Get-FileHash "$root-windows-amd64.zip" -Algorithm SHA256).Hash.ToLower() + "  $root-windows-amd64.zip" | Set-Content "$root-windows-amd64.zip.sha256" -NoNewline
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            SmartInspectPlatform-*-windows-amd64.zip
+            SmartInspectPlatform-*-windows-amd64.zip.sha256

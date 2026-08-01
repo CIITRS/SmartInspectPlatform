@@ -567,6 +567,16 @@ const Settings: React.FC = () => {
             >
               <Input placeholder="https://jisuexpress.api.bdymkt.com/express/query" />
             </Form.Item>
+            <Form.Item
+              name="EXPRESS_AUTH_MODE"
+              label="快递鉴权方式"
+              tooltip="云市场 AppCode 使用 appcode；普通 APP 的 AppKey/AppSecret 使用 app_v1。"
+            >
+              <Select options={[
+                { label: '普通 APP V1 签名（AppKey/AppSecret）', value: 'app_v1' },
+                { label: '云市场 AppCode', value: 'appcode' },
+              ]} />
+            </Form.Item>
           </Col>
           <Col xs={24} md={12}>
             <Form.Item
