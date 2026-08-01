@@ -99,7 +99,7 @@ const SampleQuery: React.FC = () => {
         <Button
           type="link"
           onClick={() => {
-            navigate(`/result/detail/${record.id}`);
+            navigate(`/result/detail/${encodeURIComponent(record.sampleCode)}`);
           }}
         >
           查看结果

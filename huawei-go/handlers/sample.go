@@ -1735,6 +1735,8 @@ func getSampleData(c *app.RequestContext, db *sql.DB) (interface{}, error) {
 	}
 
 	// 使用实际返回的样本列表长度作为总数，确保总数与返回的列表一致
+	enrichSamplesWithReportStatus(db, detect_samples)
+	enrichSamplesWithPanelMatches(db, detect_samples)
 	total := len(detect_samples)
 
 	// 返回样本列表
@@ -1742,6 +1744,94 @@ func getSampleData(c *app.RequestContext, db *sql.DB) (interface{}, error) {
 		"list":  detect_samples,
 		"total": total,
 	}, nil
+}
+
+// enrichSamplesWithPanelMatches exposes the batch-level matching cache on an
+// individual sample response, so the result detail page does not need to know
+// about the batch implementation.
+func enrichSamplesWithPanelMatches(db *sql.DB, samples []utils.H) {
+	for _, sample := range samples {
+		batchID, batchOK := sample["batch_id"].(int)
+		sampleCode, codeOK := sample["sample_code"].(string)
+		if !batchOK || batchID <= 0 || !codeOK || strings.TrimSpace(sampleCode) == "" {
+			continue
+		}
+
+		var idsJSON, matchesJSON, genesJSON sql.NullString
+		err := db.QueryRow(`SELECT matched_panel_ids_json, panel_matches_json, COALESCE(sample_genes_json, '')
+			FROM detect_sample_panel_match WHERE batch_id = ? AND sample_code = ?`, batchID, sampleCode).
+			Scan(&idsJSON, &matchesJSON, &genesJSON)
+		if err != nil {
+			if err != sql.ErrNoRows {
+				log.Printf("Load panel matches for sample %s: %v", sampleCode, err)
+			}
+			continue
+		}
+
+		var matchedIDs []int
+		var panelMatches []utils.H
+		var sampleGenes []string
+		if idsJSON.Valid && strings.TrimSpace(idsJSON.String) != "" {
+			_ = json.Unmarshal([]byte(idsJSON.String), &matchedIDs)
+		}
+		if matchesJSON.Valid && strings.TrimSpace(matchesJSON.String) != "" {
+			_ = json.Unmarshal([]byte(matchesJSON.String), &panelMatches)
+		}
+		if genesJSON.Valid && strings.TrimSpace(genesJSON.String) != "" {
+			_ = json.Unmarshal([]byte(genesJSON.String), &sampleGenes)
+		}
+		sample["matched_panel_ids"] = matchedIDs
+		sample["panel_matches"] = panelMatches
+		sample["sample_genes"] = sampleGenes
+	}
+}
+
+func enrichSamplesWithReportStatus(db *sql.DB, samples []utils.H) {
+	for _, sample := range samples {
+		sampleID, _ := sample["id"].(int)
+		if sampleID <= 0 {
+			continue
+		}
+		var reportID int
+		var status string
+		var generatedAt, reviewedAt, patientViewedAt sql.NullTime
+		var generatedBy, reviewedBy sql.NullString
+		err := db.QueryRow(`SELECT r.id, COALESCE(r.status, ''), r.generated_time, r.reviewed_time,
+			COALESCE(gu.real_name, gu.username), COALESCE(ru.real_name, ru.username), r.patient_viewed_at
+			FROM detect_report r
+			LEFT JOIN base_manage_user gu ON gu.id = r.generated_by
+			LEFT JOIN base_manage_user ru ON ru.id = r.reviewed_by
+			WHERE r.sample_id = ? ORDER BY r.created_at DESC, r.id DESC LIMIT 1`, sampleID).
+			Scan(&reportID, &status, &generatedAt, &reviewedAt, &generatedBy, &reviewedBy, &patientViewedAt)
+		if err == sql.ErrNoRows {
+			sample["has_report"] = false
+			sample["report_status"] = "none"
+			continue
+		}
+		if err != nil {
+			log.Printf("Load report status for sample %d: %v", sampleID, err)
+			continue
+		}
+		sample["has_report"] = true
+		sample["report_id"] = reportID
+		sample["report_status"] = status
+		sample["patient_viewed"] = patientViewedAt.Valid
+		if generatedAt.Valid {
+			sample["report_generated_time"] = generatedAt.Time.Format("2006-01-02T15:04:05+08:00")
+		}
+		if reviewedAt.Valid {
+			sample["report_reviewed_time"] = reviewedAt.Time.Format("2006-01-02T15:04:05+08:00")
+		}
+		if patientViewedAt.Valid {
+			sample["patient_viewed_at"] = patientViewedAt.Time.Format("2006-01-02T15:04:05+08:00")
+		}
+		if generatedBy.Valid {
+			sample["report_generated_by_name"] = generatedBy.String
+		}
+		if reviewedBy.Valid {
+			sample["report_reviewed_by_name"] = reviewedBy.String
+		}
+	}
 }
 
 func getSampleListData(c *app.RequestContext, db *sql.DB) (interface{}, error) {

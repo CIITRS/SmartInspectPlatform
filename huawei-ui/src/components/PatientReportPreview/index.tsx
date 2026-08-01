@@ -159,15 +159,16 @@ const PatientReportPreview: React.FC<{
   return (
     <>
       <Button type="link" className="patient-report-trigger" onClick={showPreview}>
-        {label || fileName}
+        {label || '查看'}
       </Button>
       <Modal
-        title={fileName}
+        title="报告预览与 AI 分析"
         open={open}
         onCancel={() => setOpen(false)}
         footer={null}
         width="min(1500px, 97vw)"
         className="patient-report-modal"
+        centered
         destroyOnClose
       >
         <div className="patient-report-layout">

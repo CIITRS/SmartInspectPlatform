@@ -60,7 +60,7 @@ const PatientReportList: React.FC<{ patientCode: string; reportFiles?: string }>
     columns={[
       {
         title: '报告文件', dataIndex: 'file_name', width: 260, fixed: 'left',
-        render: (_, item) => <PatientReportPreview patientCode={patientCode} fileUrl={item.file_url} label={item.file_name || patientReportFileName(item.file_url)} onAnalysisChange={(analysis) => updateAnalysis(item.file_url, analysis)} />,
+        render: (_, item) => <PatientReportPreview patientCode={patientCode} fileUrl={item.file_url} label="查看" onAnalysisChange={(analysis) => updateAnalysis(item.file_url, analysis)} />,
       },
       { title: '上传时间', dataIndex: 'upload_time', width: 170, render: (value) => value || '-' },
       { title: '检查时间', dataIndex: 'examination_time', width: 170, render: (value) => value || '-' },

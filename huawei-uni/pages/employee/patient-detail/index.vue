@@ -35,7 +35,7 @@
           <text class="report-file-title">患者报告</text>
           <view v-for="(file, index) in reportFiles" :key="reportFileUrl(file)" class="report-file-item" @click="openPatientReport(file)">
             <view class="report-file-main">
-              <text class="report-file-name">{{ reportFileName(file, index) }}</text>
+              <text class="report-file-name">查看报告</text>
               <text class="report-file-meta">上传：{{ file.upload_time || '-' }}</text>
               <text class="report-file-meta">检查：{{ file.examination_time || '-' }}</text>
               <text class="report-file-meta">类型：{{ file.report_type || '-' }}　项目：{{ file.examination_item || '-' }}</text>

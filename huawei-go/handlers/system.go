@@ -2862,7 +2862,7 @@ func ensureSystemSettingDefaults(db *sql.DB) {
 		{"EXPRESS_API_URL", firstNonEmptyString(os.Getenv("EXPRESS_API_URL"), "https://jisuexpress.api.bdymkt.com/express/query"), "text", 0, "快递查询 API 地址"},
 		{"EXPRESS_APP_KEY", os.Getenv("EXPRESS_APP_KEY"), "password", 1, "百度 API 市场 AppCode/AppKey"},
 		{"EXPRESS_APP_SECRET", os.Getenv("EXPRESS_APP_SECRET"), "password", 1, "百度 API 市场 AppSecret（当前 AppCode 鉴权接口不发送此值）"},
-		{"EXPRESS_POLL_INTERVAL_MINUTES", firstNonEmptyString(os.Getenv("EXPRESS_POLL_INTERVAL_MINUTES"), "30"), "number", 0, "未签收运单自动刷新间隔（分钟）"},
+		{"EXPRESS_POLL_INTERVAL_MINUTES", firstNonEmptyString(os.Getenv("EXPRESS_POLL_INTERVAL_MINUTES"), "60"), "number", 0, "未签收运单自动刷新间隔（最短60分钟）"},
 		{"SMS_BAIDU_ACCESS_KEY", os.Getenv("SMS_BAIDU_ACCESS_KEY"), "text", 0, "百度智能云 SMS Access Key"},
 		{"SMS_BAIDU_SECRET_KEY", os.Getenv("SMS_BAIDU_SECRET_KEY"), "password", 1, "百度智能云 SMS Secret Key"},
 		{"SMS_BAIDU_ENDPOINT", firstNonEmptyString(os.Getenv("SMS_BAIDU_ENDPOINT"), "http://sms.bj.baidubce.com"), "text", 0, "百度智能云 SMS 北京区域服务域名"},
@@ -2925,6 +2925,13 @@ func ensureSystemSettingDefaults(db *sql.DB) {
 			item.Key, value, item.Type, item.IsEncrypted, item.Description)
 		if err != nil {
 			log.Printf("Failed to ensure system setting %s: %v", item.Key, err)
+		}
+		if (item.Key == "EXPRESS_APP_KEY" || item.Key == "EXPRESS_APP_SECRET") && item.Value != "" {
+			if _, updateErr := db.Exec(`UPDATE setting_system SET key_value = ?, key_type = ?, is_encrypted = ?,
+				description = ?, updated_at = NOW() WHERE key_name = ? AND COALESCE(TRIM(key_value), '') = ''`,
+				value, item.Type, item.IsEncrypted, item.Description, item.Key); updateErr != nil {
+				log.Printf("Initialize empty express setting %s error: %v", item.Key, updateErr)
+			}
 		}
 	}
 }

@@ -430,7 +430,8 @@ func HandleUniEmployeePatientDetail(c *app.RequestContext, db *sql.DB) {
 		(SELECT r.id FROM detect_report r WHERE r.sample_id = s.id AND r.status IN ('reviewed', 'published') ORDER BY r.created_at DESC LIMIT 1),
 		(SELECT r.generated_time FROM detect_report r WHERE r.sample_id = s.id AND r.status IN ('reviewed', 'published') ORDER BY r.created_at DESC LIMIT 1),
 		(SELECT r.reviewed_time FROM detect_report r WHERE r.sample_id = s.id AND r.status IN ('reviewed', 'published') ORDER BY r.created_at DESC LIMIT 1),
-		(SELECT r.status FROM detect_report r WHERE r.sample_id = s.id AND r.status IN ('reviewed', 'published') ORDER BY r.created_at DESC LIMIT 1)
+		(SELECT r.status FROM detect_report r WHERE r.sample_id = s.id AND r.status IN ('reviewed', 'published') ORDER BY r.created_at DESC LIMIT 1),
+		(SELECT r.patient_viewed_at FROM detect_report r WHERE r.sample_id = s.id AND r.status IN ('reviewed', 'published') ORDER BY r.created_at DESC LIMIT 1)
 		FROM detect_sample s
 		LEFT JOIN setting_sample_type st ON s.sample_type_id = st.id
 		LEFT JOIN setting_cancer_type ct ON s.cancer_type_id = ct.id
@@ -449,13 +450,13 @@ func HandleUniEmployeePatientDetail(c *app.RequestContext, db *sql.DB) {
 		var id, sampleTypeID, cancerTypeID int
 		var sampleCode, sampleStatus, sampleTypeName, cancerTypeName, reportType, organization, treatmentStageName string
 		var collectionDate, receiveDate, sampleCreatedAt, sampleUpdatedAt, testCompletedAt sql.NullTime
-		var reportGeneratedTime, reportReviewedTime sql.NullTime
+		var reportGeneratedTime, reportReviewedTime, patientViewedAt sql.NullTime
 		var notes, publicReportStatus sql.NullString
 		var reportID sql.NullInt64
 		if err := rows.Scan(&id, &sampleCode, &collectionDate, &sampleStatus,
 			&receiveDate, &notes, &sampleTypeID, &sampleTypeName, &cancerTypeID, &cancerTypeName, &reportType, &organization, &treatmentStageName,
 			&sampleCreatedAt, &sampleUpdatedAt, &testCompletedAt,
-			&reportID, &reportGeneratedTime, &reportReviewedTime, &publicReportStatus); err != nil {
+			&reportID, &reportGeneratedTime, &reportReviewedTime, &publicReportStatus, &patientViewedAt); err != nil {
 			log.Printf("Scan miniapp employee patient sample error: %v", err)
 			continue
 		}
@@ -502,6 +503,10 @@ func HandleUniEmployeePatientDetail(c *app.RequestContext, db *sql.DB) {
 		}
 		if publicReportStatus.Valid {
 			sample["public_report_status"] = publicReportStatus.String
+		}
+		sample["patient_viewed"] = patientViewedAt.Valid
+		if patientViewedAt.Valid {
+			sample["patient_viewed_at"] = patientViewedAt.Time.Format("2006-01-02 15:04")
 		}
 		if notes.Valid {
 			sample["notes"] = notes.String
@@ -1210,6 +1215,13 @@ func HandleUniCreateSampleBoxRequest(c *app.RequestContext, db *sql.DB) {
 	if req.OrderID > 0 && req.PlanID == 0 {
 		_ = db.QueryRow(`SELECT id FROM sale_detection_plan WHERE sale_order_id = ? AND detect_patient_id = ? ORDER BY detection_number ASC LIMIT 1`, req.OrderID, patientID).Scan(&req.PlanID)
 	}
+	if req.OrderID == 0 && req.PlanID == 0 {
+		_ = db.QueryRow(`SELECT dp.sale_order_id, dp.id FROM sale_detection_plan dp
+			JOIN sale_order so ON dp.sale_order_id = so.id
+			WHERE dp.detect_patient_id = ? AND so.status <> 'cancelled'
+			ORDER BY CASE WHEN dp.status = 'scheduled' THEN 0 ELSE 1 END, dp.detection_number ASC, dp.id DESC LIMIT 1`,
+			patientID).Scan(&req.OrderID, &req.PlanID)
+	}
 
 	req.Province = strings.TrimSpace(req.Province)
 	req.City = strings.TrimSpace(req.City)
@@ -1287,12 +1299,14 @@ func HandleUniGetSampleBoxRequests(c *app.RequestContext, db *sql.DB) {
 	rows, err := db.Query(`SELECT ma.id, ma.detect_patient_id, ma.sale_order_id, ma.detection_plan_id,
 			ma.receiver_name, ma.receiver_phone, ma.province, ma.city, ma.district, ma.detail_address, ma.full_address,
 			ma.express_company, ma.tracking_number, ma.status, ma.notes, ma.shipped_at, ma.created_at, ma.updated_at,
-			p.name, p.patient_code, p.phone, so.sale_order_no, sp.name, dp.detection_number, dp.detection_date
+			p.name, p.patient_code, p.phone, so.sale_order_no, sp.name, dp.detection_number, dp.detection_date,
+			sp.detection_count, ct.name, p.detection_mode
 		FROM mail_address ma
 		JOIN detect_patient p ON ma.detect_patient_id = p.id
 		LEFT JOIN sale_order so ON ma.sale_order_id = so.id
 		LEFT JOIN sale_package sp ON so.sale_package_id = sp.id
 		LEFT JOIN sale_detection_plan dp ON ma.detection_plan_id = dp.id
+		LEFT JOIN setting_cancer_type ct ON so.setting_cancer_type_id = ct.id
 		WHERE ma.detect_patient_id = ?
 		ORDER BY ma.created_at DESC`, patientID)
 	if err != nil {
@@ -1307,6 +1321,7 @@ func HandleUniGetSampleBoxRequests(c *app.RequestContext, db *sql.DB) {
 		c.JSON(consts.StatusInternalServerError, ApiResponse{Code: 500, Success: false, Message: "查询失败", Data: nil})
 		return
 	}
+	enrichMailAppointmentTracking(db, list)
 	c.JSON(consts.StatusOK, ApiResponse{Code: 200, Success: true, Message: "获取成功", Data: utils.H{"list": list, "total": len(list)}})
 }
 
@@ -1547,7 +1562,7 @@ func HandleUniGetMailSamples(c *app.RequestContext, db *sql.DB) {
 		if deliveredAt.Valid {
 			item["delivered_at"] = deliveredAt.Time.Format("2006-01-02 15:04")
 		}
-		if latestEventStatus.Valid {
+		if expressStatus.String != "delivered" && latestEventStatus.Valid {
 			item["latest_event_status"] = latestEventStatus.String
 		}
 		if lastQueryAt.Valid {
@@ -2153,7 +2168,8 @@ func HandleUniGetSamples(c *app.RequestContext, db *sql.DB) {
 		s.sample_created_at, s.sample_updated_at, s.test_completed_at,
 		(SELECT r.generated_time FROM detect_report r WHERE r.sample_id = s.id AND r.status IN ('reviewed', 'published') ORDER BY r.created_at DESC LIMIT 1),
 		(SELECT r.reviewed_time FROM detect_report r WHERE r.sample_id = s.id AND r.status IN ('reviewed', 'published') ORDER BY r.created_at DESC LIMIT 1),
-		(SELECT r.status FROM detect_report r WHERE r.sample_id = s.id AND r.status IN ('reviewed', 'published') ORDER BY r.created_at DESC LIMIT 1)
+		(SELECT r.status FROM detect_report r WHERE r.sample_id = s.id AND r.status IN ('reviewed', 'published') ORDER BY r.created_at DESC LIMIT 1),
+		(SELECT r.patient_viewed_at FROM detect_report r WHERE r.sample_id = s.id AND r.status IN ('reviewed', 'published') ORDER BY r.created_at DESC LIMIT 1)
 		FROM detect_sample s
 		JOIN detect_patient p ON s.patient_id = p.id
 		LEFT JOIN setting_sample_type st ON s.sample_type_id = st.id
@@ -2186,14 +2202,14 @@ func HandleUniGetSamples(c *app.RequestContext, db *sql.DB) {
 		var collectionDate sql.NullTime
 		var receiveDate sql.NullTime
 		var sampleCreatedAt, sampleUpdatedAt, testCompletedAt sql.NullTime
-		var reportGeneratedTime, reportReviewedTime sql.NullTime
+		var reportGeneratedTime, reportReviewedTime, patientViewedAt sql.NullTime
 		var notes, sampleTypeName, treatmentStageName sql.NullString
 		var publicReportStatus sql.NullString
 
 		err := rows.Scan(&id, &sampleCode, &collectionDate, &sampleStatus,
 			&receiveDate, &notes, &sampleTypeName, &treatmentStageName,
 			&sampleCreatedAt, &sampleUpdatedAt, &testCompletedAt,
-			&reportGeneratedTime, &reportReviewedTime, &publicReportStatus)
+			&reportGeneratedTime, &reportReviewedTime, &publicReportStatus, &patientViewedAt)
 		if err != nil {
 			log.Printf("Scan sample error: %v", err)
 			continue
@@ -2229,6 +2245,10 @@ func HandleUniGetSamples(c *app.RequestContext, db *sql.DB) {
 		if publicReportStatus.Valid {
 			sample["public_report_status"] = publicReportStatus.String
 		}
+		sample["patient_viewed"] = patientViewedAt.Valid
+		if patientViewedAt.Valid {
+			sample["patient_viewed_at"] = patientViewedAt.Time.Format("2006-01-02 15:04")
+		}
 		if notes.Valid {
 			sample["notes"] = notes.String
 		}
@@ -2260,6 +2280,7 @@ func HandleUniCreateMailSample(c *app.RequestContext, db *sql.DB) {
 	phoneStr, _ := phone.(string)
 
 	var req struct {
+		SampleCode     string `json:"sample_code"`
 		SenderName     string `json:"sender_name"`
 		SenderPhone    string `json:"sender_phone"`
 		SenderAddress  string `json:"sender_address"`
@@ -2289,6 +2310,16 @@ func HandleUniCreateMailSample(c *app.RequestContext, db *sql.DB) {
 		})
 		return
 	}
+	req.SampleCode = strings.ToUpper(strings.TrimSpace(req.SampleCode))
+	req.TrackingNo = strings.TrimSpace(req.TrackingNo)
+	if req.SampleCode == "" {
+		c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: "请先扫码获取样本管码", Data: nil})
+		return
+	}
+	if req.TrackingNo == "" {
+		c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: "快递单号不能为空", Data: nil})
+		return
+	}
 
 	// 查询患者ID
 	var patientID int
@@ -2303,14 +2334,13 @@ func HandleUniCreateMailSample(c *app.RequestContext, db *sql.DB) {
 		return
 	}
 
-	// 邮寄样本实际上是创建一个样本记录，状态为 collected
-	// 使用当前日期作为采集日期
-	sampleCode := "HWSM" + time.Now().Format("20060102") + generateRandomString(6)
-
-	insertQuery := `INSERT INTO detect_sample (sample_code, patient_id, collection_date, 
-		sample_status, notes, sample_created_at, sample_updated_at, sample_type_id, treatment_stage_id)
-		VALUES (?, ?, NOW(), 'collected', ?, NOW(), NOW(), 1, 1)`
-
+	var sampleID int64
+	if err := db.QueryRow(`SELECT id FROM detect_sample
+		WHERE patient_id = ? AND UPPER(sample_code) = ? AND sample_status IN ('created', 'collected') LIMIT 1`,
+		patientID, req.SampleCode).Scan(&sampleID); err != nil {
+		c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: "未找到该患者待邮寄的样本管码", Data: nil})
+		return
+	}
 	mailNotes := "邮寄样本"
 	if req.SenderName != "" {
 		mailNotes += " | 寄件人: " + req.SenderName
@@ -2322,7 +2352,9 @@ func HandleUniCreateMailSample(c *app.RequestContext, db *sql.DB) {
 		mailNotes += " | 备注: " + req.Notes
 	}
 
-	result, err := db.Exec(insertQuery, sampleCode, patientID, mailNotes)
+	_, err = db.Exec(`UPDATE detect_sample SET sample_status = 'collected', collection_date = COALESCE(collection_date, CURDATE()),
+		notes = CASE WHEN COALESCE(TRIM(notes), '') = '' THEN ? ELSE CONCAT(notes, ' | ', ?) END,
+		sample_updated_at = NOW() WHERE id = ?`, mailNotes, mailNotes, sampleID)
 	if err != nil {
 		log.Printf("Create mail sample error: %v", err)
 		c.JSON(consts.StatusInternalServerError, ApiResponse{
@@ -2333,9 +2365,7 @@ func HandleUniCreateMailSample(c *app.RequestContext, db *sql.DB) {
 		})
 		return
 	}
-	sampleID, _ := result.LastInsertId()
-
-	if req.TrackingNo != "" && sampleID > 0 {
+	if sampleID > 0 {
 		_, err = db.Exec(`INSERT INTO detect_sample_express
 			(sample_id, sample_code, direction, express_type, express_company, tracking_number,
 			 query_mobile, sender_name, sender_phone, sender_address, status, notes, send_time)
@@ -2348,7 +2378,7 @@ func HandleUniCreateMailSample(c *app.RequestContext, db *sql.DB) {
 				provider_status = NULL, provider_message = '', route_json = NULL,
 				latest_event_time = NULL, latest_event_status = '', delivered_at = NULL,
 				last_query_at = NULL, last_query_error = '', updated_at = NOW()`,
-			sampleID, sampleCode, normalizeExpressType(req.ExpressType),
+			sampleID, req.SampleCode, "auto",
 			strings.TrimSpace(req.ExpressCompany), req.TrackingNo, req.SenderPhone,
 			req.SenderName, req.SenderPhone, req.SenderAddress, req.Notes)
 		if err != nil {
@@ -2360,7 +2390,7 @@ func HandleUniCreateMailSample(c *app.RequestContext, db *sql.DB) {
 		Code:    200,
 		Success: true,
 		Message: "邮寄样本提交成功",
-		Data:    utils.H{"sample_code": sampleCode},
+		Data:    utils.H{"sample_code": req.SampleCode},
 	})
 }
 

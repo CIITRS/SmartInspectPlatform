@@ -102,6 +102,11 @@ export default [
         component: './Sample/Receive',
         hideInMenu: true,
       },
+      {
+        path: '/sample/detail/:id',
+        component: './Sample/Detail',
+        hideInMenu: true,
+      },
     ],
   },
   {

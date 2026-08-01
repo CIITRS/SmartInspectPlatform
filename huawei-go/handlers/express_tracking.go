@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"bytes"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -105,18 +104,19 @@ func queryExpressProvider(client *http.Client, cfg expressProviderConfig, expres
 		return expressQueryResult{}, errors.New("快递查询 API 地址无效")
 	}
 	query := endpoint.Query()
-	query.Set("type", normalizeExpressType(expressType))
+	// 百度极速快递接口统一使用 auto 自动识别承运公司。
+	query.Set("type", "auto")
 	query.Set("number", strings.TrimSpace(number))
 	if strings.TrimSpace(mobile) != "" {
 		query.Set("mobile", strings.TrimSpace(mobile))
 	}
 	endpoint.RawQuery = query.Encode()
 
-	request, err := http.NewRequest(http.MethodPost, endpoint.String(), bytes.NewReader(nil))
+	// 百度极速快递 API 使用查询参数的 GET 请求；空 POST 会被接口拒绝为 HTTP 400。
+	request, err := http.NewRequest(http.MethodGet, endpoint.String(), nil)
 	if err != nil {
 		return expressQueryResult{}, err
 	}
-	request.Header.Set("Content-Type", "application/json;charset=UTF-8")
 	request.Header.Set("X-Bce-Signature", "AppCode/"+cfg.AppKey)
 
 	if client == nil {
@@ -129,7 +129,11 @@ func queryExpressProvider(client *http.Client, cfg expressProviderConfig, expres
 	defer response.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(response.Body, 2<<20))
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return expressQueryResult{}, fmt.Errorf("快递查询接口返回 HTTP %d", response.StatusCode)
+		message := truncateExpressText(string(body), 500)
+		if message == "" {
+			return expressQueryResult{}, fmt.Errorf("快递查询接口返回 HTTP %d", response.StatusCode)
+		}
+		return expressQueryResult{}, fmt.Errorf("快递查询接口返回 HTTP %d: %s", response.StatusCode, message)
 	}
 
 	var providerResponse expressProviderResponse
@@ -207,18 +211,29 @@ func parseExpressEventTime(value string) (time.Time, error) {
 func refreshExpressByID(db *sql.DB, expressID int) (utils.H, error) {
 	var sampleID int
 	var direction, expressType, trackingNumber string
-	var queryMobile, currentStatus sql.NullString
+	var queryMobile, senderPhone, receiverPhone, company, currentStatus sql.NullString
+	var lastQueryAt sql.NullTime
 	err := db.QueryRow(`SELECT sample_id, direction, express_type, tracking_number,
-		query_mobile, status FROM detect_sample_express WHERE id = ?`, expressID).Scan(
-		&sampleID, &direction, &expressType, &trackingNumber, &queryMobile, &currentStatus)
+		query_mobile, sender_phone, receiver_phone, express_company, status, last_query_at
+		FROM detect_sample_express WHERE id = ?`, expressID).Scan(
+		&sampleID, &direction, &expressType, &trackingNumber, &queryMobile, &senderPhone,
+		&receiverPhone, &company, &currentStatus, &lastQueryAt)
 	if err != nil {
 		return nil, err
 	}
 	if currentStatus.String == "delivered" {
 		return getExpressByID(db, expressID)
 	}
+	// 患者端、员工端和管理端共用同一份一小时缓存，避免重复计费查询。
+	if lastQueryAt.Valid && time.Since(lastQueryAt.Time) < time.Hour {
+		return getExpressByID(db, expressID)
+	}
+	mobile := strings.TrimSpace(queryMobile.String)
+	if mobile == "" && (strings.Contains(company.String, "顺丰") || strings.EqualFold(expressType, "sfexpress")) {
+		mobile = firstNonEmptyString(strings.TrimSpace(senderPhone.String), strings.TrimSpace(receiverPhone.String))
+	}
 
-	result, queryErr := queryExpressProvider(nil, expressConfig(), expressType, trackingNumber, queryMobile.String)
+	result, queryErr := queryExpressProvider(nil, expressConfig(), "auto", trackingNumber, mobile)
 	if queryErr != nil {
 		_, _ = db.Exec(`UPDATE detect_sample_express
 			SET last_query_at = NOW(), last_query_error = ?, updated_at = NOW() WHERE id = ?`,
@@ -312,7 +327,7 @@ func refreshOpenExpressShipments(db *sql.DB) {
 	rows, err := db.Query(`SELECT id FROM detect_sample_express
 		WHERE status <> 'delivered'
 		  AND tracking_number <> ''
-		  AND (last_query_at IS NULL OR last_query_at < DATE_SUB(NOW(), INTERVAL 20 MINUTE))
+		  AND (last_query_at IS NULL OR last_query_at < DATE_SUB(NOW(), INTERVAL 60 MINUTE))
 		ORDER BY COALESCE(last_query_at, created_at) ASC LIMIT 100`)
 	if err != nil {
 		log.Printf("Query open express shipments failed: %v", err)
@@ -343,10 +358,10 @@ func StartExpressTrackingWorker(db *sql.DB) {
 				minutes, _ := strconv.Atoi(getRuntimeSetting(
 					"EXPRESS_POLL_INTERVAL_MINUTES",
 					"EXPRESS_POLL_INTERVAL_MINUTES",
-					"30",
+					"60",
 				))
-				if minutes < 5 {
-					minutes = 5
+				if minutes < 60 {
+					minutes = 60
 				}
 				time.Sleep(time.Duration(minutes) * time.Minute)
 			}

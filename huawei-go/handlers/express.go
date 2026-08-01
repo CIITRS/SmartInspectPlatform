@@ -132,7 +132,7 @@ func HandleCreateExpress(c *app.RequestContext, db *sql.DB) {
 
 	// 插入数据库
 	direction := normalizeExpressDirection(req.Direction)
-	expressType := normalizeExpressType(req.ExpressType)
+	expressType := "auto"
 	query := `INSERT INTO detect_sample_express 
 		(sample_id, sample_code, direction, express_type, express_company, tracking_number, query_mobile,
 		 sender_name, sender_phone, sender_address, receiver_name, receiver_phone, receiver_address,
@@ -206,7 +206,7 @@ func HandleCreateExpress(c *app.RequestContext, db *sql.DB) {
 	})
 }
 
-// HandleGetExpress 根据样本ID获取快递运单
+// HandleGetExpress 根据样本ID或样本编号获取快递运单
 func HandleGetExpress(c *app.RequestContext, db *sql.DB) {
 	// 获取样本ID参数
 	sampleIDStr := c.Param("sampleId")
@@ -222,13 +222,14 @@ func HandleGetExpress(c *app.RequestContext, db *sql.DB) {
 
 	sampleID, err := strconv.Atoi(sampleIDStr)
 	if err != nil {
-		c.JSON(consts.StatusBadRequest, ApiResponse{
-			Code:    400,
-			Success: false,
-			Message: "无效的样本ID",
-			Data:    nil,
-		})
-		return
+		if err = db.QueryRow("SELECT id FROM detect_sample WHERE sample_code = ? LIMIT 1", sampleIDStr).Scan(&sampleID); err != nil {
+			if err == sql.ErrNoRows {
+				c.JSON(consts.StatusNotFound, ApiResponse{Code: 404, Success: false, Message: "样本不存在", Data: nil})
+				return
+			}
+			c.JSON(consts.StatusInternalServerError, ApiResponse{Code: 500, Success: false, Message: "查询样本失败", Data: nil})
+			return
+		}
 	}
 
 	// 查询快递运单
@@ -354,7 +355,7 @@ func HandleUpdateExpress(c *app.RequestContext, db *sql.DB) {
 	}
 	if req.ExpressType != "" {
 		setClauses = append(setClauses, "express_type = ?")
-		args = append(args, normalizeExpressType(req.ExpressType))
+		args = append(args, "auto")
 	}
 	if req.ExpressCompany != "" {
 		setClauses = append(setClauses, "express_company = ?")
@@ -655,7 +656,7 @@ func scanExpress(e *Express) utils.H {
 	if e.LatestEventTime.Valid {
 		result["latest_event_time"] = e.LatestEventTime.Time.Format("2006-01-02T15:04:05+08:00")
 	}
-	if e.LatestEventStatus.Valid {
+	if e.Status != "delivered" && e.LatestEventStatus.Valid {
 		result["latest_event_status"] = e.LatestEventStatus.String
 	}
 	if e.LastQueryAt.Valid {

@@ -472,6 +472,9 @@ export const uniAPI = {
       data: params
     });
   },
+  getSampleExpress: (id) => {
+    return request(`/uni/samples/${id}/express`);
+  },
   // 提交邮寄样本
   createMailSample: (data) => {
     return request('/uni/mail-sample', {

@@ -79,6 +79,13 @@ func main() {
 	handlers.InitAsync()
 	fmt.Println("异步任务处理系统初始化成功")
 
+	// 文件存储、AI、短信和快递都从数据库读取运行配置。
+	handlers.SetDB(db)
+	fmt.Println("数据库连接已传递给handlers包")
+	if db != nil {
+		handlers.ReloadAISettings(db)
+	}
+
 	// 初始化文件存储
 	if err := handlers.InitFileStorage(); err != nil {
 		log.Printf("警告: 文件存储初始化失败: %v", err)
@@ -88,11 +95,7 @@ func main() {
 		fmt.Println("文件存储初始化状态: 成功")
 	}
 
-	// 设置handlers包的数据库连接
-	handlers.SetDB(db)
-	fmt.Println("数据库连接已传递给handlers包")
 	if db != nil {
-		handlers.ReloadAISettings(db)
 		if err := handlers.EnsureExcelAlignedScreeningModels(db); err != nil {
 			log.Printf("校准健康筛查/肠癌旧版 Excel 公式失败: %v", err)
 		} else {
