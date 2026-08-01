@@ -35,6 +35,7 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
           RELEASE_SHA: ${{ github.sha }}
         run: |
+          find ../huawei-ui/dist -type f -name '*.map' -delete
           rm -rf static
           mkdir -p static
           cp -a ../huawei-ui/dist/. static/
@@ -89,6 +90,7 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
           RELEASE_SHA: ${{ github.sha }}
         run: |
+          Get-ChildItem ../huawei-ui/dist -Recurse -Filter *.map | Remove-Item -Force
           Remove-Item static -Recurse -Force -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Path static | Out-Null
           Copy-Item ../huawei-ui/dist/* static -Recurse -Force
