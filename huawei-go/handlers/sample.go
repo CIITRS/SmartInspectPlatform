@@ -29,6 +29,110 @@ func parseSampleDateTime(value string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("unsupported datetime format: %s", value)
 }
 
+type packageDetectionUse struct {
+	OrderID        int
+	PlanID         int
+	DetectionNo    int
+	RemainingCount int
+}
+
+// consumePackageDetection locks and consumes exactly one plan. If the patient
+// selected a package for the first time, the order and all plans are created in
+// the same transaction so a failed sample insert never loses a package use.
+func consumePackageDetection(tx *sql.Tx, patientID, packageID, cancerTypeID int) (packageDetectionUse, error) {
+	use := packageDetectionUse{}
+	if patientID <= 0 || packageID <= 0 {
+		return use, fmt.Errorf("患者或套餐无效")
+	}
+	err := tx.QueryRow(`SELECT so.id FROM sale_order so
+		WHERE so.detect_patient_id = ? AND so.sale_package_id = ?
+			AND so.status IN ('pending', 'pending_config', 'active')
+			AND EXISTS (SELECT 1 FROM sale_detection_plan dp WHERE dp.sale_order_id = so.id AND dp.status = 'scheduled')
+		ORDER BY CASE so.status WHEN 'active' THEN 0 ELSE 1 END, so.id
+		LIMIT 1 FOR UPDATE`, patientID, packageID).Scan(&use.OrderID)
+	if err == sql.ErrNoRows {
+		var detectionCount, intervalDays int
+		var price float64
+		if err = tx.QueryRow(`SELECT detection_count, interval_days, price FROM sale_package
+			WHERE id = ? AND status = 'active'`, packageID).Scan(&detectionCount, &intervalDays, &price); err != nil {
+			return use, fmt.Errorf("套餐不存在或已停用")
+		}
+		var idCard, salesCode string
+		if err = tx.QueryRow(`SELECT COALESCE(id_card, ''), COALESCE(sales_person, '') FROM detect_patient
+			WHERE id = ? AND is_active = 1`, patientID).Scan(&idCard, &salesCode); err != nil {
+			return use, fmt.Errorf("患者信息不存在")
+		}
+		var salesID sql.NullInt64
+		_ = tx.QueryRow(`SELECT id FROM base_manage_user WHERE status = 1
+			AND (employee_id = ? OR username = ? OR CAST(id AS CHAR) = ?) ORDER BY id LIMIT 1`,
+			salesCode, salesCode, salesCode).Scan(&salesID)
+		result, createErr := tx.Exec(`INSERT INTO sale_order
+			(sale_order_no, detect_patient_id, detect_patient_id_card, sale_package_id, setting_cancer_type_id,
+			 first_detection_date, payment_method, payment_status, sales_person_id, total_amount, status)
+			VALUES (?, ?, ?, ?, ?, CURDATE(), 'offline', 'offline', ?, ?, 'active')`,
+			generateOrderNo(), patientID, idCard, packageID, cancerTypeID, nullableSQLInt64(salesID), price)
+		if createErr != nil {
+			return use, fmt.Errorf("创建联检计划失败")
+		}
+		orderID, _ := result.LastInsertId()
+		use.OrderID = int(orderID)
+		for i := 0; i < detectionCount; i++ {
+			date := time.Now().AddDate(0, 0, i*intervalDays).Format("2006-01-02")
+			if _, createErr = tx.Exec(`INSERT INTO sale_detection_plan
+				(sale_order_id, detect_patient_id, detection_date, detection_number, status)
+				VALUES (?, ?, ?, ?, 'scheduled')`, use.OrderID, patientID, date, i+1); createErr != nil {
+				return use, fmt.Errorf("创建联检计划失败")
+			}
+		}
+	} else if err != nil {
+		return use, fmt.Errorf("读取联检计划失败")
+	}
+
+	if err = tx.QueryRow(`SELECT id, detection_number FROM sale_detection_plan
+		WHERE sale_order_id = ? AND status = 'scheduled'
+		ORDER BY detection_number LIMIT 1 FOR UPDATE`, use.OrderID).Scan(&use.PlanID, &use.DetectionNo); err != nil {
+		if err == sql.ErrNoRows {
+			return use, fmt.Errorf("该联检套餐次数已用完")
+		}
+		return use, fmt.Errorf("读取联检次数失败")
+	}
+	if _, err = tx.Exec(`UPDATE sale_detection_plan SET status = 'sampled', updated_at = NOW()
+		WHERE id = ? AND status = 'scheduled'`, use.PlanID); err != nil {
+		return use, fmt.Errorf("扣除联检次数失败")
+	}
+	_ = tx.QueryRow(`SELECT COUNT(*) FROM sale_detection_plan WHERE sale_order_id = ? AND status = 'scheduled'`, use.OrderID).Scan(&use.RemainingCount)
+	if use.RemainingCount == 0 {
+		_, _ = tx.Exec(`UPDATE sale_order SET status = 'completed', updated_at = NOW() WHERE id = ?`, use.OrderID)
+	} else {
+		_, _ = tx.Exec(`UPDATE sale_order SET status = 'active', updated_at = NOW() WHERE id = ?`, use.OrderID)
+	}
+	return use, nil
+}
+
+func validPatientSampleCode(value string) bool {
+	code := strings.TrimSpace(value)
+	return code != "" && len(code) <= 100 && !strings.ContainsAny(code, " \t\r\n")
+}
+
+func nullableSQLInt64(value sql.NullInt64) interface{} {
+	if value.Valid {
+		return value.Int64
+	}
+	return nil
+}
+
+func releasePackageDetection(tx *sql.Tx, planID, orderID int) {
+	if planID <= 0 {
+		return
+	}
+	_, _ = tx.Exec(`UPDATE sale_detection_plan SET status = 'scheduled', updated_at = NOW()
+		WHERE id = ? AND status = 'sampled'`, planID)
+	if orderID > 0 {
+		_, _ = tx.Exec(`UPDATE sale_order SET status = 'active', updated_at = NOW()
+			WHERE id = ? AND status = 'completed'`, orderID)
+	}
+}
+
 func HandleGetSamples(c *app.RequestContext, db *sql.DB) {
 	// 获取样本数据
 	sampleData, err := getSampleData(c, db)
@@ -445,9 +549,26 @@ func HandleCreateSample(c *app.RequestContext, db *sql.DB) {
 		c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: "请选择检测套餐", Data: nil})
 		return
 	}
+	if req.ServiceMode == "single" {
+		req.SalePackageID = 0
+	}
 
-	// 插入样本到数据库
-	result, err := db.Exec(`INSERT INTO detect_sample (sample_code, patient_id, sample_type_id, cancer_type_id, treatment_stage_id, collection_date, collection_operator, sample_status, report_type, notes, organization, service_mode, sale_package_id, sample_created_at, sample_updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'created', ?, ?, ?, ?, ?, NOW(), NOW())`, detect_sampleCode, req.PatientID, req.SampleTypeID, req.CancerTypeID, req.TreatmentStageID, req.CollectionDate, userID, reportType, req.Notes, req.Organization, req.ServiceMode, nullablePositiveInt(req.SalePackageID))
+	// 样本与套餐扣次必须同生共死。
+	tx, err := db.Begin()
+	if err != nil {
+		c.JSON(consts.StatusInternalServerError, ApiResponse{Code: 500, Success: false, Message: "服务器内部错误", Data: nil})
+		return
+	}
+	defer tx.Rollback()
+	packageUse := packageDetectionUse{}
+	if req.ServiceMode == "package" {
+		packageUse, err = consumePackageDetection(tx, req.PatientID, req.SalePackageID, req.CancerTypeID)
+		if err != nil {
+			c.JSON(consts.StatusConflict, ApiResponse{Code: 409, Success: false, Message: err.Error(), Data: nil})
+			return
+		}
+	}
+	result, err := tx.Exec(`INSERT INTO detect_sample (sample_code, patient_id, sample_type_id, cancer_type_id, treatment_stage_id, collection_date, collection_operator, sample_status, report_type, notes, organization, service_mode, sale_package_id, sale_order_id, detection_plan_id, sample_created_at, sample_updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'created', ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`, detect_sampleCode, req.PatientID, req.SampleTypeID, req.CancerTypeID, req.TreatmentStageID, req.CollectionDate, userID, reportType, req.Notes, req.Organization, req.ServiceMode, nullablePositiveInt(req.SalePackageID), nullablePositiveInt(packageUse.OrderID), nullablePositiveInt(packageUse.PlanID))
 	if err != nil {
 		log.Printf("Failed to create detect_sample: %v", err)
 		message := "服务器内部错误"
@@ -462,7 +583,11 @@ func HandleCreateSample(c *app.RequestContext, db *sql.DB) {
 		})
 		return
 	}
-	markSampleCodeUsed(db, detect_sampleCode)
+	markSampleCodeUsed(tx, detect_sampleCode)
+	if err := tx.Commit(); err != nil {
+		c.JSON(consts.StatusInternalServerError, ApiResponse{Code: 500, Success: false, Message: "服务器内部错误", Data: nil})
+		return
+	}
 
 	// 前端新增样本后的回写逻辑：查询 detect_batch_sample 是否存在该样本
 	// 查询患者姓名
@@ -601,6 +726,9 @@ func HandleAllocateSamples(c *app.RequestContext, db *sql.DB) {
 		c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: "请选择检测套餐", Data: nil})
 		return
 	}
+	if req.ServiceMode == "single" {
+		req.SalePackageID = 0
+	}
 
 	userID, exists := currentUserID(c)
 	if !exists {
@@ -683,11 +811,19 @@ func HandleAllocateSamples(c *app.RequestContext, db *sql.DB) {
 			return
 		}
 		code := codes[i]
+		packageUse := packageDetectionUse{}
+		if req.ServiceMode == "package" {
+			packageUse, err = consumePackageDetection(tx, patientID, req.SalePackageID, req.CancerTypeID)
+			if err != nil {
+				c.JSON(consts.StatusConflict, ApiResponse{Code: 409, Success: false, Message: err.Error(), Data: nil})
+				return
+			}
+		}
 		result, err := tx.Exec(`INSERT INTO detect_sample
-			(sample_code, patient_id, sample_type_id, cancer_type_id, treatment_stage_id, collection_date, collection_operator, sample_status, report_type, notes, organization, service_mode, sale_package_id, sample_created_at, sample_updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, 'created', ?, ?, ?, ?, ?, NOW(), NOW())`,
+			(sample_code, patient_id, sample_type_id, cancer_type_id, treatment_stage_id, collection_date, collection_operator, sample_status, report_type, notes, organization, service_mode, sale_package_id, sale_order_id, detection_plan_id, sample_created_at, sample_updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, 'created', ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
 			code, patientID, req.SampleTypeID, req.CancerTypeID, req.TreatmentStageID, req.CollectionDate, userID, reportType, req.Notes, req.Organization,
-			req.ServiceMode, nullablePositiveInt(req.SalePackageID))
+			req.ServiceMode, nullablePositiveInt(req.SalePackageID), nullablePositiveInt(packageUse.OrderID), nullablePositiveInt(packageUse.PlanID))
 		if err != nil {
 			log.Printf("Failed to allocate sample %s: %v", code, err)
 			message := "新增样本失败"
@@ -709,10 +845,8 @@ func HandleAllocateSamples(c *app.RequestContext, db *sql.DB) {
 		}
 		markSampleCodeUsed(tx, code)
 		created = append(created, utils.H{
-			"id":           id,
-			"sample_code":  code,
-			"patient_id":   patientID,
-			"patient_name": patientName,
+			"id": id, "sample_code": code, "patient_id": patientID, "patient_name": patientName,
+			"detection_number": packageUse.DetectionNo, "remaining_count": packageUse.RemainingCount,
 		})
 	}
 
@@ -1098,9 +1232,10 @@ func HandleDeleteSample(c *app.RequestContext, db *sql.DB) {
 	}
 	defer tx.Rollback()
 
-	var sampleCode string
-	var batchID sql.NullInt64
-	if err := tx.QueryRow(`SELECT sample_code, batch_id FROM detect_sample WHERE id = ?`, id).Scan(&sampleCode, &batchID); err != nil {
+	var sampleCode, sampleStatus string
+	var batchID, detectionPlanID, saleOrderID sql.NullInt64
+	if err := tx.QueryRow(`SELECT sample_code, sample_status, batch_id, detection_plan_id, sale_order_id FROM detect_sample WHERE id = ?`, id).
+		Scan(&sampleCode, &sampleStatus, &batchID, &detectionPlanID, &saleOrderID); err != nil {
 		if err == sql.ErrNoRows {
 			c.JSON(consts.StatusNotFound, ApiResponse{
 				Code:    404,
@@ -1215,6 +1350,9 @@ func HandleDeleteSample(c *app.RequestContext, db *sql.DB) {
 			Data:    utils.H{"error": err.Error()},
 		})
 		return
+	}
+	if sampleStatus == "created" || sampleStatus == "collected" {
+		releasePackageDetection(tx, int(detectionPlanID.Int64), int(saleOrderID.Int64))
 	}
 
 	if batchID.Valid {

@@ -105,9 +105,15 @@ func miniappEmployeePatientAccessFilter(db *sql.DB, employeeID int, tableAlias s
 
 // HandleUniEmployeeSampleOptions 获取员工小程序新增样本所需选项。
 func HandleUniEmployeeSampleOptions(c *app.RequestContext, db *sql.DB) {
-	employeeID, ok := requireMiniappEmployee(c, db)
-	if !ok {
-		return
+	identityType, _ := c.Get("miniapp_identity_type")
+	isPatient := identityType == "patient"
+	employeeID := 0
+	if !isPatient {
+		var ok bool
+		employeeID, ok = requireMiniappEmployee(c, db)
+		if !ok {
+			return
+		}
 	}
 
 	sampleTypes, err := getSampleTypesData(db)
@@ -128,18 +134,38 @@ func HandleUniEmployeeSampleOptions(c *app.RequestContext, db *sql.DB) {
 		c.JSON(consts.StatusInternalServerError, ApiResponse{Code: 500, Success: false, Message: "获取患者状态失败", Data: nil})
 		return
 	}
-	employeeNo, err := getEmployeeIDForSampleCode(db, employeeID)
-	if err != nil {
-		c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: err.Error(), Data: nil})
-		return
+	prefix := ""
+	if !isPatient {
+		employeeNo, err := getEmployeeIDForSampleCode(db, employeeID)
+		if err != nil {
+			c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: err.Error(), Data: nil})
+			return
+		}
+		prefix = sampleCodePrefix(employeeNo)
 	}
-	prefix := sampleCodePrefix(employeeNo)
 
 	var historicalSample interface{}
 	consentSigned := false
 	consentSignedAt := ""
+	selfPatientID := 0
+	profileComplete := true
 	patientIDs := strings.Split(strings.TrimSpace(c.Query("patient_ids")), ",")
+	if isPatient {
+		patientID, _, patientErr := getMiniappPatientSubject(c, db)
+		if patientErr != nil {
+			c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: "未找到患者信息", Data: nil})
+			return
+		}
+		selfPatientID = patientID
+		var completionStatus int
+		_ = db.QueryRow(`SELECT completion_status FROM detect_patient WHERE id = ?`, patientID).Scan(&completionStatus)
+		profileComplete = completionStatus == 1
+		patientIDs = []string{strconv.Itoa(patientID)}
+	}
 	nextSequence := nextSampleSequence(db, prefix)
+	if isPatient {
+		nextSequence = 0
+	}
 	if len(patientIDs) > 1 {
 		nextSequence = nextFreshSampleSequence(db, prefix)
 	}
@@ -152,9 +178,12 @@ func HandleUniEmployeeSampleOptions(c *app.RequestContext, db *sql.DB) {
 			}
 			patientQuery := "SELECT COUNT(*) FROM detect_patient WHERE id = ? AND is_active = 1"
 			patientArgs := []interface{}{patientID}
-			if accessFilter, accessArgs := miniappEmployeePatientAccessFilter(db, employeeID, ""); accessFilter != "" {
-				patientQuery += " AND " + accessFilter
-				patientArgs = append(patientArgs, accessArgs...)
+			if !isPatient {
+				accessFilter, accessArgs := miniappEmployeePatientAccessFilter(db, employeeID, "")
+				if accessFilter != "" {
+					patientQuery += " AND " + accessFilter
+					patientArgs = append(patientArgs, accessArgs...)
+				}
 			}
 			var accessible int
 			if db.QueryRow(patientQuery, patientArgs...).Scan(&accessible) == nil && accessible > 0 {
@@ -198,6 +227,9 @@ func HandleUniEmployeeSampleOptions(c *app.RequestContext, db *sql.DB) {
 		Success: true,
 		Message: "获取成功",
 		Data: utils.H{
+			"self_service":      isPatient,
+			"patient_id":        selfPatientID,
+			"profile_complete":  profileComplete,
 			"sample_types":      sampleTypes,
 			"cancer_types":      cancerTypes,
 			"treatment_stages":  treatmentStages,
@@ -889,6 +921,10 @@ func HandleUniUpdatePatientInfo(c *app.RequestContext, db *sql.DB) {
 		})
 		return
 	}
+	var patientID int
+	if db.QueryRow(`SELECT id FROM detect_patient WHERE phone = ? AND is_active = 1 LIMIT 1`, phoneStr).Scan(&patientID) == nil {
+		assignPatientSalesPersonIfMissing(db, patientID)
+	}
 
 	c.JSON(consts.StatusOK, ApiResponse{
 		Code:    200,
@@ -1070,7 +1106,16 @@ func HandleUniGetMyPackages(c *app.RequestContext, db *sql.DB) {
 
 	list := []utils.H{}
 	for _, id := range orderIDs {
-		list = append(list, orderMap[id])
+		item := orderMap[id]
+		remaining := 0
+		for _, plan := range item["plans"].([]utils.H) {
+			if plan["status"] == "scheduled" {
+				remaining++
+			}
+		}
+		item["remaining_count"] = remaining
+		item["used_count"] = item["detection_count"].(int) - remaining
+		list = append(list, item)
 	}
 
 	c.JSON(consts.StatusOK, ApiResponse{Code: 200, Success: true, Message: "获取成功", Data: utils.H{"list": list, "total": len(list)}})
@@ -2863,9 +2908,15 @@ func HandleUniEmployeePendingSamples(c *app.RequestContext, db *sql.DB) {
 
 // HandleUniEmployeeAllocateSamples 员工小程序分配样本编号
 func HandleUniEmployeeAllocateSamples(c *app.RequestContext, db *sql.DB) {
-	employeeID, ok := requireMiniappEmployee(c, db)
-	if !ok {
-		return
+	identityType, _ := c.Get("miniapp_identity_type")
+	isPatient := identityType == "patient"
+	employeeID := 0
+	if !isPatient {
+		var ok bool
+		employeeID, ok = requireMiniappEmployee(c, db)
+		if !ok {
+			return
+		}
 	}
 
 	var req struct {
@@ -2876,6 +2927,7 @@ func HandleUniEmployeeAllocateSamples(c *app.RequestContext, db *sql.DB) {
 		ReportType           string `json:"report_type"`
 		StartSequence        int    `json:"start_sequence"`
 		ManualSuffix         string `json:"manual_suffix"`
+		SampleCode           string `json:"sample_code"`
 		Organization         string `json:"organization"`
 		Notes                string `json:"notes"`
 		ServiceMode          string `json:"service_mode"`
@@ -2889,6 +2941,19 @@ func HandleUniEmployeeAllocateSamples(c *app.RequestContext, db *sql.DB) {
 	if err != nil || json.Unmarshal(body, &req) != nil {
 		c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: "请求参数错误", Data: nil})
 		return
+	}
+	if isPatient {
+		patientID, _, patientErr := getMiniappPatientSubject(c, db)
+		if patientErr != nil {
+			c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: "未找到患者信息", Data: nil})
+			return
+		}
+		var completionStatus int
+		if db.QueryRow(`SELECT completion_status FROM detect_patient WHERE id = ? AND is_active = 1`, patientID).Scan(&completionStatus) != nil || completionStatus != 1 {
+			c.JSON(consts.StatusConflict, ApiResponse{Code: 409, Success: false, Message: "请先完善患者基本信息", Data: utils.H{"need_profile": true}})
+			return
+		}
+		req.PatientIDs = []int{patientID}
 	}
 	if len(req.PatientIDs) == 0 {
 		c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: "请选择患者", Data: nil})
@@ -2918,6 +2983,9 @@ func HandleUniEmployeeAllocateSamples(c *app.RequestContext, db *sql.DB) {
 		c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: "请选择检测套餐", Data: nil})
 		return
 	}
+	if req.ServiceMode == "single" {
+		req.SalePackageID = 0
+	}
 	if len(req.PatientIDs) == 1 {
 		var consentCount int
 		_ = db.QueryRow(`SELECT COUNT(*) FROM patient_informed_consent WHERE patient_id = ?`, req.PatientIDs[0]).Scan(&consentCount)
@@ -2927,15 +2995,18 @@ func HandleUniEmployeeAllocateSamples(c *app.RequestContext, db *sql.DB) {
 		}
 	}
 
-	employeeNo, err := getEmployeeIDForSampleCode(db, employeeID)
-	if err != nil {
-		c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: err.Error(), Data: nil})
-		return
+	prefix := ""
+	if !isPatient {
+		employeeNo, codeErr := getEmployeeIDForSampleCode(db, employeeID)
+		if codeErr != nil {
+			c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: codeErr.Error(), Data: nil})
+			return
+		}
+		prefix = sampleCodePrefix(employeeNo)
 	}
-	prefix := sampleCodePrefix(employeeNo)
 	startSequence := req.StartSequence
 	req.ManualSuffix = strings.TrimSpace(req.ManualSuffix)
-	if req.ManualSuffix != "" {
+	if !isPatient && req.ManualSuffix != "" {
 		if len(req.PatientIDs) != 1 {
 			c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: "自定义后4位只能用于单个患者分配", Data: nil})
 			return
@@ -2950,17 +3021,26 @@ func HandleUniEmployeeAllocateSamples(c *app.RequestContext, db *sql.DB) {
 		}
 		startSequence, _ = strconv.Atoi(req.ManualSuffix)
 	}
-	if startSequence <= 0 {
+	if !isPatient && startSequence <= 0 {
 		startSequence = nextSampleSequence(db, prefix)
 	}
-	if startSequence > 9999 || startSequence+len(req.PatientIDs)-1 > 9999 {
+	if !isPatient && (startSequence > 9999 || startSequence+len(req.PatientIDs)-1 > 9999) {
 		c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: "后4位序号超出范围", Data: nil})
 		return
 	}
 
 	codes := make([]string, 0, len(req.PatientIDs))
-	for i := range req.PatientIDs {
-		codes = append(codes, buildSampleCode(prefix, startSequence+i))
+	if isPatient {
+		code := strings.ToUpper(strings.TrimSpace(req.SampleCode))
+		if !validPatientSampleCode(code) {
+			c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: "请扫描或输入有效的样本盒管码", Data: nil})
+			return
+		}
+		codes = append(codes, code)
+	} else {
+		for i := range req.PatientIDs {
+			codes = append(codes, buildSampleCode(prefix, startSequence+i))
+		}
 	}
 	for _, code := range codes {
 		exists, err := sampleCodeExists(db, code)
@@ -2984,7 +3064,10 @@ func HandleUniEmployeeAllocateSamples(c *app.RequestContext, db *sql.DB) {
 
 	created := []utils.H{}
 	reportType := normalizeSampleReportType(req.ReportType)
-	patientAccessFilter, patientAccessArgs := miniappEmployeePatientAccessFilter(db, employeeID, "")
+	patientAccessFilter, patientAccessArgs := "", []interface{}{}
+	if !isPatient {
+		patientAccessFilter, patientAccessArgs = miniappEmployeePatientAccessFilter(db, employeeID, "")
+	}
 	for i, patientID := range req.PatientIDs {
 		var patientName string
 		var count int
@@ -3004,17 +3087,25 @@ func HandleUniEmployeeAllocateSamples(c *app.RequestContext, db *sql.DB) {
 				(patient_id, consent_version, consent_text, signature_data, signed_name, signed_by_user_id, signed_at, created_at, updated_at)
 				VALUES (?, 'v1', ?, ?, ?, ?, NOW(), NOW(), NOW())
 				ON DUPLICATE KEY UPDATE patient_id = patient_id`,
-				patientID, informedConsentText, req.ConsentSignature, strings.TrimSpace(req.ConsentSignedName), employeeID); err != nil {
+				patientID, informedConsentText, req.ConsentSignature, strings.TrimSpace(req.ConsentSignedName), nullablePositiveInt(employeeID)); err != nil {
 				c.JSON(consts.StatusInternalServerError, ApiResponse{Code: 500, Success: false, Message: "保存知情同意书失败", Data: nil})
+				return
+			}
+		}
+		packageUse := packageDetectionUse{}
+		if req.ServiceMode == "package" {
+			packageUse, err = consumePackageDetection(tx, patientID, req.SalePackageID, req.CancerTypeID)
+			if err != nil {
+				c.JSON(consts.StatusConflict, ApiResponse{Code: 409, Success: false, Message: err.Error(), Data: nil})
 				return
 			}
 		}
 		result, err := tx.Exec(`INSERT INTO detect_sample
 			(sample_code, patient_id, sample_type_id, cancer_type_id, treatment_stage_id, collection_date, collection_operator,
-			 sample_status, report_type, notes, organization, service_mode, sale_package_id, sample_created_at, sample_updated_at)
-			VALUES (?, ?, ?, ?, ?, NOW(), ?, 'created', ?, ?, ?, ?, ?, NOW(), NOW())`,
-			code, patientID, req.SampleTypeID, req.CancerTypeID, req.TreatmentStageID, employeeID, reportType, req.Notes, req.Organization,
-			req.ServiceMode, nullablePositiveInt(req.SalePackageID))
+			 sample_status, report_type, notes, organization, service_mode, sale_package_id, sale_order_id, detection_plan_id, sample_created_at, sample_updated_at)
+			VALUES (?, ?, ?, ?, ?, NOW(), ?, 'created', ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+			code, patientID, req.SampleTypeID, req.CancerTypeID, req.TreatmentStageID, nullablePositiveInt(employeeID), reportType, req.Notes, req.Organization,
+			req.ServiceMode, nullablePositiveInt(req.SalePackageID), nullablePositiveInt(packageUse.OrderID), nullablePositiveInt(packageUse.PlanID))
 		if err != nil {
 			log.Printf("Miniapp allocate sample %s error: %v", code, err)
 			c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: "新增样本失败", Data: utils.H{"error": err.Error()}})
@@ -3031,7 +3122,8 @@ func HandleUniEmployeeAllocateSamples(c *app.RequestContext, db *sql.DB) {
 			}
 		}
 		markSampleCodeUsed(tx, code)
-		created = append(created, utils.H{"id": id, "sample_code": code, "patient_id": patientID, "patient_name": patientName})
+		created = append(created, utils.H{"id": id, "sample_code": code, "patient_id": patientID, "patient_name": patientName,
+			"detection_number": packageUse.DetectionNo, "remaining_count": packageUse.RemainingCount})
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -3179,12 +3271,13 @@ func HandleUniEmployeeDeleteSample(c *app.RequestContext, db *sql.DB) {
 		return
 	}
 	var sampleCode, status string
-	var batchID int
+	var batchID, detectionPlanID, saleOrderID int
 	var reportCount int
 	err = db.QueryRow(`SELECT s.sample_code, s.sample_status, COALESCE(s.batch_id, 0),
+		COALESCE(s.detection_plan_id, 0), COALESCE(s.sale_order_id, 0),
 		(SELECT COUNT(*) FROM detect_report r WHERE r.sample_id = s.id)
 		FROM detect_sample s WHERE s.id = ? AND s.collection_operator = ?`, sampleID, employeeID).
-		Scan(&sampleCode, &status, &batchID, &reportCount)
+		Scan(&sampleCode, &status, &batchID, &detectionPlanID, &saleOrderID, &reportCount)
 	if err == sql.ErrNoRows {
 		c.JSON(consts.StatusNotFound, ApiResponse{Code: 404, Success: false, Message: "样本不存在或不是由当前员工创建", Data: nil})
 		return
@@ -3217,6 +3310,7 @@ func HandleUniEmployeeDeleteSample(c *app.RequestContext, db *sql.DB) {
 		c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: "删除样本失败", Data: nil})
 		return
 	}
+	releasePackageDetection(tx, detectionPlanID, saleOrderID)
 	if err = recycleSampleCode(tx, sampleCode, prefix, sequence, employeeID, reusable); err != nil {
 		c.JSON(consts.StatusInternalServerError, ApiResponse{Code: 500, Success: false, Message: "编号回收失败", Data: nil})
 		return

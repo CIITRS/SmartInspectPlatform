@@ -95,15 +95,15 @@ github_curl() {
 }
 
 monitor_download() {
-  local curl_pid="$1" archive="$2" started_at now elapsed
+  local worker_pid="$1" parts_dir="$2" started_at initial_bytes now elapsed current_bytes
   started_at="$(date +%s)"
-  while kill -0 "$curl_pid" 2>/dev/null; do
-    if [[ -f "$archive" ]]; then
-      DOWNLOAD_BYTES="$(stat -c %s "$archive" 2>/dev/null || printf '0')"
-    fi
+  initial_bytes="$(find "$parts_dir" -maxdepth 1 -type f -name '*.part' -printf '%s\n' 2>/dev/null | awk '{total += $1} END {print total + 0}')"
+  while kill -0 "$worker_pid" 2>/dev/null; do
+    current_bytes="$(find "$parts_dir" -maxdepth 1 -type f -name '*.part' -printf '%s\n' 2>/dev/null | awk '{total += $1} END {print total + 0}')"
+    DOWNLOAD_BYTES="$current_bytes"
     now="$(date +%s)"
     elapsed=$((now - started_at))
-    [[ "$elapsed" -gt 0 ]] && DOWNLOAD_SPEED_BPS=$((DOWNLOAD_BYTES / elapsed))
+    [[ "$elapsed" -gt 0 ]] && DOWNLOAD_SPEED_BPS=$(((current_bytes - initial_bytes) / elapsed))
     if [[ "$DOWNLOAD_TOTAL_BYTES" -gt 0 ]]; then
       DOWNLOAD_PERCENT=$((DOWNLOAD_BYTES * 100 / DOWNLOAD_TOTAL_BYTES))
       [[ "$DOWNLOAD_PERCENT" -gt 100 ]] && DOWNLOAD_PERCENT=100
@@ -113,20 +113,69 @@ monitor_download() {
   done
 }
 
+download_asset_part() {
+  local asset_id="$1" begin="$2" end="$3" part_path="$4" expected_size=$((end - begin + 1)) attempt actual_size=0
+  trap - ERR
+  rm -f -- "$part_path"
+  for attempt in 1 2 3 4 5; do
+    if github_curl \
+      --header "Accept: application/octet-stream" \
+      --range "$begin-$end" \
+      "https://api.github.com/repos/$REPOSITORY/releases/assets/$asset_id" \
+      --output "$part_path"; then
+      actual_size="$(stat -c %s "$part_path")"
+      [[ "$actual_size" == "$expected_size" ]] && return 0
+    fi
+    rm -f -- "$part_path"
+    sleep "$attempt"
+  done
+  return 1
+}
+
+download_asset_parts() {
+  local asset_id="$1" parts_dir="$2" part_size=$((4 * 1024 * 1024)) concurrency="${SMART_INSPECT_DOWNLOAD_CONNECTIONS:-4}"
+  local index=0 begin end expected_size part_path pid status=0
+  local -a pids=()
+  [[ "$concurrency" =~ ^[1-8]$ ]] || concurrency=4
+  mkdir -p "$parts_dir"
+  for ((begin = 0; begin < DOWNLOAD_TOTAL_BYTES; begin += part_size)); do
+    end=$((begin + part_size - 1))
+    [[ "$end" -lt "$DOWNLOAD_TOTAL_BYTES" ]] || end=$((DOWNLOAD_TOTAL_BYTES - 1))
+    expected_size=$((end - begin + 1))
+    part_path="$parts_dir/$(printf '%06d' "$index").part"
+    if [[ "$(stat -c %s "$part_path" 2>/dev/null || printf '0')" != "$expected_size" ]]; then
+      download_asset_part "$asset_id" "$begin" "$end" "$part_path" &
+      pids+=("$!")
+    fi
+    if [[ "${#pids[@]}" -ge "$concurrency" ]]; then
+      for pid in "${pids[@]}"; do
+        wait "$pid" || status=1
+      done
+      [[ "$status" == "0" ]] || return 1
+      pids=()
+    fi
+    index=$((index + 1))
+  done
+  for pid in "${pids[@]}"; do
+    wait "$pid" || status=1
+  done
+  return "$status"
+}
+
 download_asset() {
-  local asset_id="$1" archive="$2" curl_pid monitor_pid curl_status
-  github_curl \
-    --continue-at - \
-    --header "Accept: application/octet-stream" \
-    "https://api.github.com/repos/$REPOSITORY/releases/assets/$asset_id" \
-    --output "$archive" &
-  curl_pid=$!
-  monitor_download "$curl_pid" "$archive" &
+  local asset_id="$1" archive="$2" parts_dir="$UPGRADE_ROOT/cache/$DOWNLOAD_NAME.parts" worker_pid monitor_pid worker_status part
+  download_asset_parts "$asset_id" "$parts_dir" &
+  worker_pid=$!
+  monitor_download "$worker_pid" "$parts_dir" &
   monitor_pid=$!
-  curl_status=0
-  wait "$curl_pid" || curl_status=$?
+  worker_status=0
+  wait "$worker_pid" || worker_status=$?
   wait "$monitor_pid" || true
-  [[ "$curl_status" == "0" ]] || return "$curl_status"
+  [[ "$worker_status" == "0" ]] || return "$worker_status"
+  : >"$archive"
+  while IFS= read -r part; do
+    cat "$part" >>"$archive"
+  done < <(find "$parts_dir" -maxdepth 1 -type f -name '*.part' | sort)
   DOWNLOAD_BYTES="$(stat -c %s "$archive")"
   DOWNLOAD_PERCENT=100
   write_status 2 "running" "发布包下载完成，正在校验完整性"
@@ -320,6 +369,7 @@ download_release() {
   }
   expected_digest="${asset_digest#sha256:}"
   printf '%s  %s\n' "$expected_digest" "$archive" | sha256sum --check -
+  rm -rf -- "$UPGRADE_ROOT/cache/$asset.parts"
   tar -xzf "$archive" -C "$DOWNLOAD_DIR"
   package_root="$DOWNLOAD_DIR/SmartInspectPlatform-$TAG"
   [[ -x "$package_root/huawei-go/server" ]] || {
