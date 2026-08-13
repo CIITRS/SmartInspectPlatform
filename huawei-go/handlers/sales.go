@@ -241,6 +241,10 @@ func HandleAssignSalesToSelfRegisteredPatient(c *app.RequestContext, db *sql.DB)
 
 // 套餐管理相关API
 
+func validPackageConfiguration(detectionCount, intervalDays int) bool {
+	return detectionCount > 0 && intervalDays > 0
+}
+
 // 处理获取套餐列表请求
 func HandleListPackages(c *app.RequestContext, db *sql.DB) {
 	// 从数据库查询套餐列表
@@ -314,6 +318,10 @@ func HandleCreatePackage(c *app.RequestContext, db *sql.DB) {
 		})
 		return
 	}
+	if !validPackageConfiguration(req.DetectionCount, req.IntervalDays) {
+		c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: "套餐检查次数和间隔天数必须大于0", Data: nil})
+		return
+	}
 
 	// 设置默认状态
 	status := req.Status
@@ -376,6 +384,10 @@ func HandleUpdatePackage(c *app.RequestContext, db *sql.DB) {
 			Message: "请求参数错误",
 			Data:    utils.H{"error": err.Error()},
 		})
+		return
+	}
+	if !validPackageConfiguration(req.DetectionCount, req.IntervalDays) {
+		c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: "套餐检查次数和间隔天数必须大于0", Data: nil})
 		return
 	}
 

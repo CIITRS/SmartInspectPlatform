@@ -279,11 +279,11 @@ const SalesConfigure: React.FC = () => {
             </Col>
             <Col span={12}>
               <Form.Item
-                label="检查次数"
+                label="套餐总检查次数"
                 name="detectionCount"
                 rules={[{ required: true, message: '请输入检查次数' }]}
               >
-                <InputNumber style={{ width: '100%' }} min={1} placeholder="请输入检查次数" />
+                <InputNumber style={{ width: '100%' }} min={1} placeholder="每次试剂盒回寄扣除1次" />
               </Form.Item>
             </Col>
             <Col span={12}>
@@ -368,11 +368,11 @@ const SalesConfigure: React.FC = () => {
             </Col>
             <Col span={12}>
               <Form.Item
-                label="检查次数"
+                label="套餐总检查次数"
                 name="detectionCount"
                 rules={[{ required: true, message: '请输入检查次数' }]}
               >
-                <InputNumber style={{ width: '100%' }} min={1} placeholder="请输入检查次数" />
+                <InputNumber style={{ width: '100%' }} min={1} placeholder="每次试剂盒回寄扣除1次" />
               </Form.Item>
             </Col>
             <Col span={12}>

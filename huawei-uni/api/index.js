@@ -436,8 +436,8 @@ export const uniAPI = {
     return request('/uni/detection-plans');
   },
   // 获取我的套餐
-  getMyPackages: () => {
-    return request('/uni/packages');
+  getMyPackages: (sampleCode = '') => {
+    return request(`/uni/packages${sampleCode ? `?sample_code=${encodeURIComponent(sampleCode)}` : ''}`);
   },
   getPackageOptions: () => {
     return request('/uni/package-options');

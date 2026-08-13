@@ -3,7 +3,7 @@ package appversion
 const GitHubRepository = "CIITRS/SmartInspectPlatform"
 
 var (
-	CurrentVersion = "v2.0.0"
+	CurrentVersion = "v2.0.1"
 	ReleaseDate    = "2026-08-14"
 	BuildCommit    = "development"
 	BuildDate      = ""
