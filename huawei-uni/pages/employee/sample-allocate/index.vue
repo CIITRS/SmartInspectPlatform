@@ -37,6 +37,7 @@
         <picker :range="packages" range-key="display_name" @change="onPackageChange">
           <view class="picker" :class="{ placeholder: !form.sale_package_id }">{{ selectedOptionName(packages, form.sale_package_id, '请选择套餐') }}</view>
         </picker>
+        <text v-if="selfMode" class="hint">此处登记检测类型；具体扣除哪个套餐，在试剂盒回寄时选择</text>
       </view>
       <view class="form-item">
         <text class="label">检测癌种</text>
@@ -82,7 +83,7 @@
         <text class="label">备注</text>
         <input v-model="form.notes" class="input" placeholder="选填" />
       </view>
-      <view class="form-item">
+      <view v-if="!selfMode" class="form-item">
         <text class="label">回寄快递（绑定样本后可登记）</text>
         <view class="inline-row">
           <input v-model="form.return_express_company" class="input express-company" placeholder="快递公司" />

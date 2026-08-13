@@ -1003,8 +1003,11 @@ func HandleUniGetDetectionPlans(c *app.RequestContext, db *sql.DB) {
 
 // HandleUniGetMyPackages 获取患者已购买套餐和下一次预计检测时间。
 func HandleUniGetMyPackages(c *app.RequestContext, db *sql.DB) {
-	phone, _ := c.Get("miniapp_phone")
-	phoneStr, _ := phone.(string)
+	patientID, _, subjectErr := getMiniappPatientSubject(c, db)
+	if subjectErr != nil {
+		c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: "未找到患者信息", Data: nil})
+		return
+	}
 
 	query := `SELECT so.id, so.sale_order_no, so.first_detection_date, so.status,
 		so.created_at, sp.id, sp.name, sp.detection_count, sp.interval_days,
@@ -1016,10 +1019,10 @@ func HandleUniGetMyPackages(c *app.RequestContext, db *sql.DB) {
 		JOIN sale_package sp ON so.sale_package_id = sp.id
 		JOIN detect_patient p ON so.detect_patient_id = p.id
 		LEFT JOIN sale_detection_plan dp ON dp.sale_order_id = so.id
-		WHERE p.phone = ? AND p.is_active = 1
+		WHERE p.id = ? AND p.is_active = 1 AND so.status IN ('pending', 'pending_config', 'active', 'completed')
 		ORDER BY so.created_at DESC, dp.detection_number ASC`
 
-	rows, err := db.Query(query, phoneStr)
+	rows, err := db.Query(query, patientID)
 	if err != nil {
 		log.Printf("Query my packages error: %v", err)
 		c.JSON(consts.StatusInternalServerError, ApiResponse{Code: 500, Success: false, Message: "查询失败", Data: nil})
@@ -1118,7 +1121,18 @@ func HandleUniGetMyPackages(c *app.RequestContext, db *sql.DB) {
 		list = append(list, item)
 	}
 
-	c.JSON(consts.StatusOK, ApiResponse{Code: 200, Success: true, Message: "获取成功", Data: utils.H{"list": list, "total": len(list)}})
+	selectedOrderID := 0
+	packageDeducted := false
+	if sampleCode := strings.ToUpper(strings.TrimSpace(c.Query("sample_code"))); sampleCode != "" {
+		var deducted int
+		_ = db.QueryRow(`SELECT COALESCE(ds.sale_order_id, 0), IF(ds.detection_plan_id IS NULL, 0, 1)
+			FROM detect_sample ds WHERE ds.patient_id = ? AND UPPER(ds.sample_code) = ? LIMIT 1`, patientID, sampleCode).
+			Scan(&selectedOrderID, &deducted)
+		packageDeducted = deducted == 1
+	}
+	c.JSON(consts.StatusOK, ApiResponse{Code: 200, Success: true, Message: "获取成功", Data: utils.H{
+		"list": list, "total": len(list), "selected_order_id": selectedOrderID, "package_deducted": packageDeducted,
+	}})
 }
 
 // HandleUniGetPackageOptions 返回患者可申请的套餐和癌型。
@@ -2321,11 +2335,9 @@ func HandleUniGetSamples(c *app.RequestContext, db *sql.DB) {
 
 // HandleUniCreateMailSample 提交邮寄样本申请
 func HandleUniCreateMailSample(c *app.RequestContext, db *sql.DB) {
-	phone, _ := c.Get("miniapp_phone")
-	phoneStr, _ := phone.(string)
-
 	var req struct {
 		SampleCode     string `json:"sample_code"`
+		SaleOrderID    int    `json:"sale_order_id"`
 		SenderName     string `json:"sender_name"`
 		SenderPhone    string `json:"sender_phone"`
 		SenderAddress  string `json:"sender_address"`
@@ -2366,9 +2378,7 @@ func HandleUniCreateMailSample(c *app.RequestContext, db *sql.DB) {
 		return
 	}
 
-	// 查询患者ID
-	var patientID int
-	err = db.QueryRow("SELECT id FROM detect_patient WHERE phone = ? AND is_active = 1 LIMIT 1", phoneStr).Scan(&patientID)
+	patientID, _, err := getMiniappPatientSubject(c, db)
 	if err != nil {
 		c.JSON(consts.StatusBadRequest, ApiResponse{
 			Code:    400,
@@ -2379,13 +2389,6 @@ func HandleUniCreateMailSample(c *app.RequestContext, db *sql.DB) {
 		return
 	}
 
-	var sampleID int64
-	if err := db.QueryRow(`SELECT id FROM detect_sample
-		WHERE patient_id = ? AND UPPER(sample_code) = ? AND sample_status IN ('created', 'collected') LIMIT 1`,
-		patientID, req.SampleCode).Scan(&sampleID); err != nil {
-		c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: "未找到该患者待邮寄的样本管码", Data: nil})
-		return
-	}
 	mailNotes := "邮寄样本"
 	if req.SenderName != "" {
 		mailNotes += " | 寄件人: " + req.SenderName
@@ -2397,45 +2400,83 @@ func HandleUniCreateMailSample(c *app.RequestContext, db *sql.DB) {
 		mailNotes += " | 备注: " + req.Notes
 	}
 
-	_, err = db.Exec(`UPDATE detect_sample SET sample_status = 'collected', collection_date = COALESCE(collection_date, CURDATE()),
-		notes = CASE WHEN COALESCE(TRIM(notes), '') = '' THEN ? ELSE CONCAT(notes, ' | ', ?) END,
-		sample_updated_at = NOW() WHERE id = ?`, mailNotes, mailNotes, sampleID)
+	tx, err := db.Begin()
 	if err != nil {
-		log.Printf("Create mail sample error: %v", err)
-		c.JSON(consts.StatusInternalServerError, ApiResponse{
-			Code:    500,
-			Success: false,
-			Message: "提交失败",
-			Data:    nil,
-		})
+		c.JSON(consts.StatusInternalServerError, ApiResponse{Code: 500, Success: false, Message: "提交失败", Data: nil})
 		return
 	}
-	if sampleID > 0 {
-		_, err = db.Exec(`INSERT INTO detect_sample_express
-			(sample_id, sample_code, direction, express_type, express_company, tracking_number,
-			 query_mobile, sender_name, sender_phone, sender_address, status, notes, send_time)
-			VALUES (?, ?, 'inbound', ?, ?, ?, ?, ?, ?, ?, 'in_transit', ?, NOW())
-			ON DUPLICATE KEY UPDATE express_type = VALUES(express_type),
-				express_company = VALUES(express_company), tracking_number = VALUES(tracking_number),
-				query_mobile = VALUES(query_mobile), sender_name = VALUES(sender_name),
-				sender_phone = VALUES(sender_phone), sender_address = VALUES(sender_address),
-				status = 'in_transit', notes = VALUES(notes), send_time = NOW(),
-				provider_status = NULL, provider_message = '', route_json = NULL,
-				latest_event_time = NULL, latest_event_status = '', delivered_at = NULL,
-				last_query_at = NULL, last_query_error = '', updated_at = NOW()`,
-			sampleID, req.SampleCode, "auto",
-			strings.TrimSpace(req.ExpressCompany), req.TrackingNo, req.SenderPhone,
-			req.SenderName, req.SenderPhone, req.SenderAddress, req.Notes)
-		if err != nil {
-			log.Printf("Create mail sample express error: %v", err)
+	defer tx.Rollback()
+
+	var sampleID int64
+	var linkedOrderID, linkedPlanID int
+	if err = tx.QueryRow(`SELECT id, COALESCE(sale_order_id, 0), COALESCE(detection_plan_id, 0)
+		FROM detect_sample WHERE patient_id = ? AND UPPER(sample_code) = ?
+		AND sample_status IN ('created', 'collected') LIMIT 1 FOR UPDATE`, patientID, req.SampleCode).
+		Scan(&sampleID, &linkedOrderID, &linkedPlanID); err != nil {
+		c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: "未找到该患者待邮寄的样本管码", Data: nil})
+		return
+	}
+
+	packageUse := packageDetectionUse{OrderID: linkedOrderID, PlanID: linkedPlanID}
+	if linkedPlanID > 0 {
+		if req.SaleOrderID > 0 && req.SaleOrderID != linkedOrderID {
+			c.JSON(consts.StatusConflict, ApiResponse{Code: 409, Success: false, Message: "该试剂盒已扣除其他套餐次数，不能重复扣减", Data: nil})
+			return
 		}
+		_ = tx.QueryRow(`SELECT detection_number FROM sale_detection_plan WHERE id = ?`, linkedPlanID).Scan(&packageUse.DetectionNo)
+		_ = tx.QueryRow(`SELECT COUNT(*) FROM sale_detection_plan WHERE sale_order_id = ? AND status = 'scheduled'`, linkedOrderID).Scan(&packageUse.RemainingCount)
+	} else if req.SaleOrderID > 0 {
+		packageUse, err = consumePackageOrderDetection(tx, patientID, req.SaleOrderID)
+		if err != nil {
+			c.JSON(consts.StatusConflict, ApiResponse{Code: 409, Success: false, Message: err.Error(), Data: nil})
+			return
+		}
+	}
+
+	serviceMode := "single"
+	var packageID, orderID, planID interface{}
+	if packageUse.PlanID > 0 {
+		serviceMode = "package"
+		if packageUse.PackageID == 0 {
+			_ = tx.QueryRow(`SELECT sale_package_id FROM sale_order WHERE id = ?`, packageUse.OrderID).Scan(&packageUse.PackageID)
+		}
+		packageID, orderID, planID = packageUse.PackageID, packageUse.OrderID, packageUse.PlanID
+	}
+	if _, err = tx.Exec(`UPDATE detect_sample SET sample_status = 'collected', collection_date = COALESCE(collection_date, CURDATE()),
+		service_mode = ?, sale_package_id = ?, sale_order_id = ?, detection_plan_id = ?,
+		notes = CASE WHEN COALESCE(TRIM(notes), '') = '' THEN ? ELSE CONCAT(notes, ' | ', ?) END,
+		sample_updated_at = NOW() WHERE id = ?`, serviceMode, packageID, orderID, planID, mailNotes, mailNotes, sampleID); err != nil {
+		c.JSON(consts.StatusInternalServerError, ApiResponse{Code: 500, Success: false, Message: "提交失败", Data: nil})
+		return
+	}
+	if _, err = tx.Exec(`INSERT INTO detect_sample_express
+		(sample_id, sample_code, direction, express_type, express_company, tracking_number,
+		 query_mobile, sender_name, sender_phone, sender_address, status, notes, send_time)
+		VALUES (?, ?, 'inbound', ?, ?, ?, ?, ?, ?, ?, 'in_transit', ?, NOW())
+		ON DUPLICATE KEY UPDATE express_type = VALUES(express_type),
+			express_company = VALUES(express_company), tracking_number = VALUES(tracking_number),
+			query_mobile = VALUES(query_mobile), sender_name = VALUES(sender_name),
+			sender_phone = VALUES(sender_phone), sender_address = VALUES(sender_address),
+			status = 'in_transit', notes = VALUES(notes), send_time = NOW(),
+			provider_status = NULL, provider_message = '', route_json = NULL,
+			latest_event_time = NULL, latest_event_status = '', delivered_at = NULL,
+			last_query_at = NULL, last_query_error = '', updated_at = NOW()`,
+		sampleID, req.SampleCode, "auto", strings.TrimSpace(req.ExpressCompany), req.TrackingNo, req.SenderPhone,
+		req.SenderName, req.SenderPhone, req.SenderAddress, req.Notes); err != nil {
+		c.JSON(consts.StatusInternalServerError, ApiResponse{Code: 500, Success: false, Message: "保存物流信息失败", Data: nil})
+		return
+	}
+	if err = tx.Commit(); err != nil {
+		c.JSON(consts.StatusInternalServerError, ApiResponse{Code: 500, Success: false, Message: "提交失败", Data: nil})
+		return
 	}
 
 	c.JSON(consts.StatusOK, ApiResponse{
 		Code:    200,
 		Success: true,
 		Message: "邮寄样本提交成功",
-		Data:    utils.H{"sample_code": req.SampleCode},
+		Data: utils.H{"sample_code": req.SampleCode, "sale_order_id": packageUse.OrderID,
+			"detection_number": packageUse.DetectionNo, "remaining_count": packageUse.RemainingCount},
 	})
 }
 
@@ -3092,20 +3133,12 @@ func HandleUniEmployeeAllocateSamples(c *app.RequestContext, db *sql.DB) {
 				return
 			}
 		}
-		packageUse := packageDetectionUse{}
-		if req.ServiceMode == "package" {
-			packageUse, err = consumePackageDetection(tx, patientID, req.SalePackageID, req.CancerTypeID)
-			if err != nil {
-				c.JSON(consts.StatusConflict, ApiResponse{Code: 409, Success: false, Message: err.Error(), Data: nil})
-				return
-			}
-		}
 		result, err := tx.Exec(`INSERT INTO detect_sample
 			(sample_code, patient_id, sample_type_id, cancer_type_id, treatment_stage_id, collection_date, collection_operator,
-			 sample_status, report_type, notes, organization, service_mode, sale_package_id, sale_order_id, detection_plan_id, sample_created_at, sample_updated_at)
-			VALUES (?, ?, ?, ?, ?, NOW(), ?, 'created', ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+			 sample_status, report_type, notes, organization, service_mode, sale_package_id, sample_created_at, sample_updated_at)
+			VALUES (?, ?, ?, ?, ?, NOW(), ?, 'created', ?, ?, ?, ?, ?, NOW(), NOW())`,
 			code, patientID, req.SampleTypeID, req.CancerTypeID, req.TreatmentStageID, nullablePositiveInt(employeeID), reportType, req.Notes, req.Organization,
-			req.ServiceMode, nullablePositiveInt(req.SalePackageID), nullablePositiveInt(packageUse.OrderID), nullablePositiveInt(packageUse.PlanID))
+			req.ServiceMode, nullablePositiveInt(req.SalePackageID))
 		if err != nil {
 			log.Printf("Miniapp allocate sample %s error: %v", code, err)
 			c.JSON(consts.StatusBadRequest, ApiResponse{Code: 400, Success: false, Message: "新增样本失败", Data: utils.H{"error": err.Error()}})
@@ -3122,8 +3155,7 @@ func HandleUniEmployeeAllocateSamples(c *app.RequestContext, db *sql.DB) {
 			}
 		}
 		markSampleCodeUsed(tx, code)
-		created = append(created, utils.H{"id": id, "sample_code": code, "patient_id": patientID, "patient_name": patientName,
-			"detection_number": packageUse.DetectionNo, "remaining_count": packageUse.RemainingCount})
+		created = append(created, utils.H{"id": id, "sample_code": code, "patient_id": patientID, "patient_name": patientName})
 	}
 
 	if err := tx.Commit(); err != nil {
