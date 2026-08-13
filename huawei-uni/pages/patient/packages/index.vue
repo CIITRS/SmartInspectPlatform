@@ -37,6 +37,10 @@
             <text class="meta-value">{{ item.detection_count }} 次</text>
           </view>
           <view class="meta-item">
+            <text class="meta-label">剩余次数</text>
+            <text class="meta-value">{{ item.remaining_count }} 次</text>
+          </view>
+          <view class="meta-item">
             <text class="meta-label">检测间隔</text>
             <text class="meta-value">{{ item.interval_days }} 天</text>
           </view>
@@ -185,7 +189,7 @@ export default {
       return map[status] || status || '-'
     },
     planStatusText(status) {
-      const map = { scheduled: '待检测', completed: '已完成', cancelled: '已取消' }
+      const map = { scheduled: '待检测', sampled: '样本已登记', completed: '已完成', cancelled: '已取消' }
       return map[status] || status || '-'
     },
     async openApply() {

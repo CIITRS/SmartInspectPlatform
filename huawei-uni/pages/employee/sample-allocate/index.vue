@@ -1,8 +1,8 @@
 <template>
   <view class="page">
     <view class="header">
-      <text class="title">新增样本</text>
-      <text class="desc">为当前患者新增样本</text>
+      <text class="title">{{ selfMode ? '样本管码录入' : '新增样本' }}</text>
+      <text class="desc">{{ selfMode ? '录入本次检测信息并绑定样本盒管码' : '为当前患者新增样本' }}</text>
     </view>
 
     <view v-if="patientIds.length === 0" class="empty">
@@ -17,6 +17,14 @@
         <button class="reuse-btn" @click="reuseHistoricalSample">复用信息</button>
       </view>
       <view class="form-card">
+      <view v-if="selfMode" class="form-item">
+        <text class="label">样本盒管码</text>
+        <view class="inline-row">
+          <input v-model="form.sample_code" class="input inline-input" placeholder="请扫描或输入完整管码" />
+          <button class="scan-btn" @click="scanSampleCode">扫码</button>
+        </view>
+        <text class="hint">管码与本次检测一一绑定，提交后不可重复使用</text>
+      </view>
       <view class="form-item">
         <text class="label">检测方式</text>
         <view class="segmented">
@@ -54,7 +62,7 @@
           <view class="picker" :class="{ placeholder: !form.treatment_stage_id }">{{ selectedOptionName(treatmentStages, form.treatment_stage_id, '请选择治疗阶段') }}</view>
         </picker>
       </view>
-      <view class="form-item">
+      <view v-if="!selfMode" class="form-item">
         <text class="label">{{ patientIds.length === 1 ? '样本编号后4位' : '起始后4位' }}</text>
         <view class="inline-row">
           <text class="prefix-box">{{ samplePrefix || '前缀加载中' }}</text>
@@ -120,6 +128,7 @@ export default {
   data() {
     return {
       patientIds: [],
+      selfMode: false,
       sampleTypes: [],
       cancerTypes: [],
       treatmentStages: [],
@@ -150,7 +159,8 @@ export default {
         sale_package_id: 0,
         consent_signed_name: '',
         return_express_company: '',
-        return_tracking_number: ''
+        return_tracking_number: '',
+        sample_code: ''
       },
       samplePrefix: '',
       historicalSample: null,
@@ -170,18 +180,36 @@ export default {
     }
   },
   onLoad(options) {
+    this.selfMode = Boolean(options && options.self === '1')
     const ids = String((options && options.patient_ids) || '')
       .split(',')
       .map(id => Number(id))
       .filter(id => id > 0)
     this.patientIds = ids
+    if (this.selfMode) {
+      const state = uni.getStorageSync('userInfo') || {}
+      if (state.identity !== 'patient') {
+        uni.showToast({ title: '请使用患者身份登录', icon: 'none' })
+        setTimeout(() => uni.redirectTo({ url: '/pages/login/index' }), 500)
+        return
+      }
+      const pendingCode = uni.getStorageSync('pending_sample_code')
+      if (pendingCode) this.form.sample_code = String(pendingCode)
+    }
     this.loadOptions()
   },
   methods: {
     async loadOptions() {
       try {
-        const res = await uniAPI.getEmployeeSampleOptions(this.patientIds)
+        const res = this.selfMode
+          ? await uniAPI.getPatientSampleOptions()
+          : await uniAPI.getEmployeeSampleOptions(this.patientIds)
         const data = res.data || {}
+        if (this.selfMode && data.profile_complete === false) {
+          uni.redirectTo({ url: '/pages/patient/profile/index?return_to=sample-entry' })
+          return
+        }
+        if (this.selfMode && Number(data.patient_id) > 0) this.patientIds = [Number(data.patient_id)]
         this.sampleTypes = this.toList(data.sample_types)
         this.cancerTypes = this.toList(data.cancer_types)
         this.treatmentStages = this.toList(data.treatment_stages)
@@ -208,7 +236,7 @@ export default {
     },
     selectedOptionName(options, id, placeholder) {
       const selected = options.find(item => Number(item.id) === Number(id))
-      return selected ? selected.name : placeholder
+      return selected ? (selected.display_name || selected.name) : placeholder
     },
     onCancerTypeChange(e) {
       const selected = this.cancerTypes[Number(e.detail.value)]
@@ -297,7 +325,10 @@ export default {
         onlyFromCamera: false,
         success: (res) => {
           const code = String(res.result || '').trim()
-          if (code.length >= 4) {
+          if (this.selfMode && code) {
+            this.form.sample_code = code
+            uni.showToast({ title: '管码识别成功', icon: 'success' })
+          } else if (code.length >= 4) {
             this.suffixValue = code.slice(-4)
             uni.showToast({ title: '已识别后4位', icon: 'success' })
           } else {
@@ -324,7 +355,11 @@ export default {
       if (this.form.service_mode === 'package' && !this.form.sale_package_id) { uni.showToast({ title: '请选择检测套餐', icon: 'none' }); return }
       if (!this.form.treatment_stage_id) { uni.showToast({ title: '请选择治疗阶段', icon: 'none' }); return }
       const suffix = this.suffixValue
-      if (!/^\d{4}$/.test(suffix)) {
+      if (this.selfMode && !String(this.form.sample_code || '').trim()) {
+        uni.showToast({ title: '请扫描样本盒管码', icon: 'none' })
+        return
+      }
+      if (!this.selfMode && !/^\d{4}$/.test(suffix)) {
         uni.showToast({ title: '请输入4位数字', icon: 'none' })
         return
       }
@@ -348,17 +383,25 @@ export default {
           start_sequence: Number(this.form.start_sequence) || 0,
           manual_suffix: this.form.manual_suffix || ''
         }
-        if (this.patientIds.length === 1) {
+        if (!this.selfMode && this.patientIds.length === 1) {
           payload.start_sequence = 0
           payload.manual_suffix = suffix
         } else {
           payload.start_sequence = Number(suffix)
           payload.manual_suffix = ''
         }
-        const res = await uniAPI.allocateEmployeeSamples(payload)
+        const res = this.selfMode
+          ? await uniAPI.allocatePatientSample(payload)
+          : await uniAPI.allocateEmployeeSamples(payload)
         if (res.success && res.data) {
-          uni.showToast({ title: '新增成功', icon: 'success' })
-          setTimeout(() => uni.navigateBack(), 700)
+          uni.removeStorageSync('pending_sample_entry')
+          uni.removeStorageSync('pending_sample_code')
+          const sample = res.data.created_samples && res.data.created_samples[0]
+          const title = sample && sample.detection_number
+            ? `第${sample.detection_number}次登记成功，剩余${sample.remaining_count}次`
+            : '新增成功'
+          uni.showToast({ title, icon: 'success', duration: 1800 })
+          setTimeout(() => this.selfMode ? uni.switchTab({ url: '/pages/home/index' }) : uni.navigateBack(), 900)
         } else {
           uni.showToast({ title: res.message || '新增失败', icon: 'none' })
         }

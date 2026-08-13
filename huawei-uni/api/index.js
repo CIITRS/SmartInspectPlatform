@@ -426,6 +426,11 @@ export const uniAPI = {
       data
     });
   },
+  getPatientSampleOptions: () => request('/uni/patient/sample-options', { showError: false }),
+  allocatePatientSample: (data) => request('/uni/patient/samples/allocate', {
+    method: 'POST',
+    data
+  }),
   // 获取检测计划/预约列表
   getDetectionPlans: () => {
     return request('/uni/detection-plans');

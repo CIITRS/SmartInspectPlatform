@@ -74,6 +74,7 @@ export default {
     return {
       loading: true,
       submitting: false,
+      returnToSampleEntry: false,
       form: {
         name: '',
         gender: '男',
@@ -88,7 +89,8 @@ export default {
       }
     }
   },
-  onLoad() {
+  onLoad(options) {
+    this.returnToSampleEntry = options && options.return_to === 'sample-entry'
     this.loadInfo()
   },
   methods: {
@@ -125,7 +127,13 @@ export default {
         const response = await uniAPI.updatePatientInfo(this.form)
         if (response.success) {
           uni.showToast({ title: '保存成功', icon: 'success' })
-          setTimeout(() => { uni.navigateBack() }, 1500)
+          setTimeout(() => {
+            if (this.returnToSampleEntry) {
+              uni.redirectTo({ url: '/pages/employee/sample-allocate/index?self=1' })
+            } else {
+              uni.navigateBack()
+            }
+          }, 800)
         } else {
           uni.showToast({ title: response.message || '保存失败', icon: 'none' })
         }

@@ -31,6 +31,12 @@
       }
     },
     {
+      "path": "pages/sample-entry/index",
+      "style": {
+        "navigationBarTitleText": "样本录入"
+      }
+    },
+    {
       "path": "pages/invite/index",
       "style": {
         "navigationBarTitleText": "客户信息登记"

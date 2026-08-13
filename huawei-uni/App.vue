@@ -1,10 +1,14 @@
 <script>
+import { captureSampleEntryLaunch, routePendingSampleEntry } from './utils/auth.js'
+
 export default {
-  onLaunch() {
-    console.log('App Launch')
+  onLaunch(options) {
+    captureSampleEntryLaunch(options)
+    setTimeout(routePendingSampleEntry, 0)
   },
-  onShow() {
-    console.log('App Show')
+  onShow(options) {
+    captureSampleEntryLaunch(options)
+    setTimeout(routePendingSampleEntry, 50)
   },
   onHide() {
     console.log('App Hide')

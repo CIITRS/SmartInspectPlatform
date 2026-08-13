@@ -113,9 +113,57 @@ export function saveLoginState({ phone, sessionId, identity, identityList }) {
 }
 
 export function navigateToHome(identityType) {
+  if (identityType === 'patient' && uni.getStorageSync('pending_sample_entry')) {
+    uni.redirectTo({
+      url: '/pages/employee/sample-allocate/index?self=1'
+    })
+    return
+  }
   uni.switchTab({
     url: '/pages/home/index'
   })
+}
+
+function decodeScene(value) {
+  try {
+    return decodeURIComponent(String(value || '').replace(/\+/g, '%20'))
+  } catch (error) {
+    return String(value || '')
+  }
+}
+
+export function captureSampleEntryLaunch(options = {}) {
+  const query = options.query || options
+  const q = decodeScene(query.q)
+  const scene = decodeScene(query.scene || q)
+  const action = String(query.action || query.type || '').toLowerCase()
+  const isEntry = query.sample_entry === '1' || action === 'sample-entry' || /sample[-_ ]?entry|样本录入/i.test(`${scene} ${q}`)
+  if (!isEntry) return false
+
+  uni.setStorageSync('pending_sample_entry', '1')
+  const match = scene.match(/(?:sample_code|tube_code|tube)=([^&]+)/i)
+  const sampleCode = String(query.sample_code || query.tube_code || (match && match[1]) || '').trim()
+  if (sampleCode) uni.setStorageSync('pending_sample_code', sampleCode)
+  return true
+}
+
+export function routePendingSampleEntry() {
+  if (!uni.getStorageSync('pending_sample_entry')) return false
+  const pages = getCurrentPages()
+  const route = pages.length ? pages[pages.length - 1].route : ''
+  if (/pages\/(login|patient\/profile|employee\/sample-allocate)/.test(route)) return true
+
+  const state = uni.getStorageSync('userInfo') || {}
+  if (!state.identity || !uni.getStorageSync('miniapp_session_id')) {
+    uni.redirectTo({ url: '/pages/login/index' })
+    return true
+  }
+  if (state.identity !== 'patient') {
+    uni.showToast({ title: '请切换患者身份后录入样本', icon: 'none' })
+    return true
+  }
+  uni.redirectTo({ url: '/pages/employee/sample-allocate/index?self=1' })
+  return true
 }
 
 export function refreshTabBarFromStorage() {

@@ -334,6 +334,10 @@ func EnsureSchema(db *sql.DB, dbName string) error {
 			report_type VARCHAR(50) DEFAULT 'normal',
 			notes TEXT,
 			organization VARCHAR(255) DEFAULT '',
+			service_mode VARCHAR(20) NOT NULL DEFAULT 'single',
+			sale_package_id INT DEFAULT NULL,
+			sale_order_id INT DEFAULT NULL,
+			detection_plan_id INT DEFAULT NULL,
 			sample_created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			sample_updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -807,6 +811,8 @@ func EnsureSchema(db *sql.DB, dbName string) error {
 		"model_id":                   "INT DEFAULT NULL",
 		"service_mode":               "VARCHAR(20) NOT NULL DEFAULT 'single'",
 		"sale_package_id":            "INT DEFAULT NULL",
+		"sale_order_id":              "INT DEFAULT NULL",
+		"detection_plan_id":          "INT DEFAULT NULL",
 		"inbound_express_signed_at":  "DATETIME DEFAULT NULL",
 		"outbound_express_signed_at": "DATETIME DEFAULT NULL",
 	}
@@ -865,6 +871,14 @@ func EnsureSchema(db *sql.DB, dbName string) error {
 		if err := ensureColumn(db, dbName, "sale_package", column, definition); err != nil {
 			return err
 		}
+	}
+	if err := ensureSingleColumnUniqueIndex(db, dbName, "detect_sample", "detection_plan_id", "uk_detect_sample_detection_plan"); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`INSERT INTO sale_package (name, detection_count, interval_days, price, description, status, created_at, updated_at)
+		SELECT '四次联检', 4, 90, 0, '共四次检查，每次样本登记自动扣除一次', 'active', NOW(), NOW()
+		WHERE NOT EXISTS (SELECT 1 FROM sale_package WHERE name = '四次联检')`); err != nil {
+		return err
 	}
 	saleOrderColumns := map[string]string{
 		"sale_order_no":          "VARCHAR(64) UNIQUE",

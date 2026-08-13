@@ -1194,6 +1194,12 @@ func main() {
 			uni.PUT("/patient/info", func(c context.Context, ctx *app.RequestContext) {
 				handlers.HandleUniUpdatePatientInfo(ctx, db)
 			})
+			uni.GET("/patient/sample-options", func(c context.Context, ctx *app.RequestContext) {
+				handlers.HandleUniEmployeeSampleOptions(ctx, db)
+			})
+			uni.POST("/patient/samples/allocate", func(c context.Context, ctx *app.RequestContext) {
+				handlers.HandleUniEmployeeAllocateSamples(ctx, db)
+			})
 
 			// 检测计划/预约
 			uni.GET("/detection-plans", func(c context.Context, ctx *app.RequestContext) {

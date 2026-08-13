@@ -480,6 +480,36 @@ func miniappNeedPatientRegister(c *app.RequestContext, phone string) {
 	})
 }
 
+// leastLoadedSalesPersonCode keeps self-registration free of a manager field
+// while still assigning every new patient to an active sales employee.
+func leastLoadedSalesPersonCode(db *sql.DB) string {
+	var code string
+	_ = db.QueryRow(`SELECT COALESCE(u.employee_id, '')
+		FROM base_manage_user u
+		JOIN setting_role r ON r.id = u.role_id
+		WHERE u.status = 1 AND COALESCE(u.employee_id, '') <> '' AND r.name LIKE '%销售%'
+		ORDER BY (SELECT COUNT(*) FROM detect_patient p WHERE p.is_active = 1 AND p.sales_person = u.employee_id), u.id
+		LIMIT 1`).Scan(&code)
+	return strings.TrimSpace(code)
+}
+
+func assignPatientSalesPersonIfMissing(db *sql.DB, patientID int) string {
+	if patientID <= 0 {
+		return ""
+	}
+	var current string
+	_ = db.QueryRow(`SELECT COALESCE(sales_person, '') FROM detect_patient WHERE id = ?`, patientID).Scan(&current)
+	if strings.TrimSpace(current) != "" {
+		return strings.TrimSpace(current)
+	}
+	code := leastLoadedSalesPersonCode(db)
+	if code != "" {
+		_, _ = db.Exec(`UPDATE detect_patient SET sales_person = ?, updated_at = NOW()
+			WHERE id = ? AND COALESCE(NULLIF(TRIM(sales_person), ''), '') = ''`, code, patientID)
+	}
+	return code
+}
+
 func buildPatientRegisterInfo(idCard string) (string, interface{}) {
 	if len(idCard) != 18 {
 		return "", nil
@@ -767,6 +797,7 @@ func HandleMiniappRegisterPatient(c *app.RequestContext, db *sql.DB) {
 			c.JSON(consts.StatusInternalServerError, ApiResponse{Code: 500, Success: false, Message: "绑定患者失败", Data: nil})
 			return
 		}
+		assignPatientSalesPersonIfMissing(db, existingPatient.ID)
 		name := existingPatient.Name
 		if strings.TrimSpace(name) == "" {
 			name = req.Name
@@ -791,9 +822,9 @@ func HandleMiniappRegisterPatient(c *app.RequestContext, db *sql.DB) {
 	}
 
 	result, err := db.Exec(`INSERT INTO detect_patient
-		(patient_code, name, gender, id_document_type, id_document_no, id_card, phone, birthday, patient_source, wechat_openid, report_subscribe_enabled, report_subscribe_template_id, is_active, completion_status, patient_status, created_at, updated_at)
-		VALUES (?, ?, ?, '居民身份证', ?, ?, ?, ?, 'miniapp_self', ?, ?, ?, 1, 1, 1, NOW(), NOW())`,
-		patientCode, req.Name, gender, req.IdCard, req.IdCard, req.Phone, birthday, openID, boolToInt(req.ReportSubscribeAccepted), subscribeTemplateID,
+		(patient_code, name, gender, id_document_type, id_document_no, id_card, phone, birthday, patient_source, sales_person, wechat_openid, report_subscribe_enabled, report_subscribe_template_id, is_active, completion_status, patient_status, created_at, updated_at)
+		VALUES (?, ?, ?, '居民身份证', ?, ?, ?, ?, 'miniapp_self', ?, ?, ?, ?, 1, 1, 1, NOW(), NOW())`,
+		patientCode, req.Name, gender, req.IdCard, req.IdCard, req.Phone, birthday, leastLoadedSalesPersonCode(db), openID, boolToInt(req.ReportSubscribeAccepted), subscribeTemplateID,
 	)
 	if err != nil {
 		log.Printf("Create miniapp patient error: %v", err)
